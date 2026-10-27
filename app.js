@@ -4,7 +4,7 @@ import { createStore, inc } from './store.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.02';
+const VERSION = '1.03';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -136,7 +136,18 @@ function pendingFor(k) { return S.reqPending.filter((r) => r.kid === k && r.stat
 function heldFor(k) { return pendingFor(k).reduce((s, r) => s + (r.pts || 0), 0); }
 function available(k) { return points(k) - heldFor(k); }
 function completionMap() { const m = {}; for (const c of S.completions) m[c.id] = c; return m; }
-function starsThisYear(k) { return S.stars.filter((s) => s.kid === k); }
+// Above and Beyond tallies run from one "Close this tally" to the next (e.g. Christmas to Christmas).
+function curPeriod() {
+  const today = L.dateKey(new Date());
+  return (S.config && S.config.starPeriod) || { id: 'y' + today.slice(0, 4), start: today.slice(0, 4) + '-01-01' };
+}
+function starPeriodOf(st) { return st.period || ('y' + st.year); }
+function starsThisYear(k) { const p = curPeriod().id; return S.stars.filter((st) => st.kid === k && starPeriodOf(st) === p); }
+function shortDate(key) { return L.fmtKey(key).replace(/^\w+ /, ''); }
+function sinceText() { return 'since ' + shortDate(curPeriod().start); }
+function pastTallies(k) {
+  return (S.config.starHistory || []).slice().reverse().map((t) => ({ label: t.label, n: (t.totals || {})[k] || 0 }));
+}
 function choreCtx(key) {
   const doneBy = {};
   for (const c of S.completions) if (c.date === key) doneBy[c.choreId] = c.kid;
@@ -199,7 +210,7 @@ function subscribe() {
   S.unsubs.push(st.listen('completions', { where: ['date', '>=', L.addDays(key, -7)] }, (rows) => { S.completions = rows; render(); }, onErr));
   S.unsubs.push(st.listen('requests', { where: ['status', '==', 'pending'] }, (rows) => { S.reqPending = rows; render(); }, onErr));
   S.unsubs.push(st.listen('requests', { orderBy: ['createdAt', 'desc'], limit: 40 }, (rows) => { S.reqRecent = rows; render(); }, onErr));
-  S.unsubs.push(st.listen('stars', { where: ['year', '==', year] }, (rows) => { S.stars = rows.sort((a, b) => b.at - a.at); render(); }, onErr));
+  S.unsubs.push(st.listen('stars', { orderBy: ['at', 'desc'], limit: 3000 }, (rows) => { S.stars = rows; render(); }, onErr));
   S.unsubs.push(st.listen('adjustments', { orderBy: ['at', 'desc'], limit: 30 }, (rows) => { S.adjustments = rows; render(); }, onErr));
 }
 function unsubscribeAll() {
@@ -271,7 +282,8 @@ function setColour(kid, colour) {
   write([{ op: 'set', path: 'prefs/' + kid, data: { colour } }]);
 }
 function runSetup() {
-  const ops = [{ op: 'set', path: 'config/main', data: SEED_CONFIG }];
+  const today = L.dateKey(new Date());
+  const ops = [{ op: 'set', path: 'config/main', data: Object.assign({}, SEED_CONFIG, { starPeriod: { id: 'p' + today.replace(/-/g, ''), start: today }, starHistory: [] }) }];
   for (const c of SEED_CHORES) { const { id, ...rest } = c; ops.push({ op: 'set', path: 'chores/' + id, data: rest }); }
   for (const r of SEED_REWARDS) { const { id, ...rest } = r; ops.push({ op: 'set', path: 'rewards/' + id, data: rest }); }
   for (const [k, b] of Object.entries(SEED_BALANCES)) ops.push({ op: 'set', path: 'balances/' + k, data: b });
@@ -381,7 +393,7 @@ function kidBand(k, t) {
     '<div class="row">' + backToPicker() +
     '<div class="grow col" style="gap:0"><h1 class="title-xl" style="font-size:28px">Hi ' + h(kidName(k)) + '</h1><div class="row small" style="gap:6px">' + ico('house', 14, 2.2) + 'At ' + h(houseName(here)) + '</div></div>' + avatar(k) + '</div>' +
     '<div class="grid2"><div class="stat"><div class="lbl">' + coinIco(16) + 'Points</div><div class="num">' + points(k) + '</div><div class="sub">= ' + L.money(points(k), perDollar()) + '</div></div>' +
-    '<div class="stat dark"><div class="lbl">' + starIco(16) + 'Above &amp; Beyond</div><div class="num">' + starsThisYear(k).length + '</div><div class="sub">this year</div></div></div>' +
+    '<div class="stat dark"><div class="lbl">' + starIco(16) + 'Above &amp; Beyond</div><div class="num">' + starsThisYear(k).length + '</div><div class="sub">' + sinceText() + '</div></div></div>' +
     (t.total ? '<div class="col" style="gap:6px"><div class="row small" style="justify-content:space-between;font-weight:800;font-size:14px"><span>Today: ' + t.done + ' of ' + t.total + ' done</span><span>+' + t.pts + ' pts</span></div><div class="bar" role="img" aria-label="' + pct + '% done"><i style="width:' + pct + '%"></i></div></div>' : '') +
     '</header>';
 }
@@ -468,15 +480,21 @@ function viewKidRewards(k) {
 }
 
 function viewKidMe(k) {
-  const year = L.dateKey(new Date()).slice(0, 4);
+  const per = curPeriod();
   const mine = starsThisYear(k);
-  const counts = new Array(12).fill(0);
-  for (const s of mine) counts[Number((s.date || '0000-01').slice(5, 7)) - 1]++;
+  // One bar per month from the start of this tally (last 12 months at most)
+  const nowKey = L.dateKey(new Date());
+  const months = [];
+  let y = Number(per.start.slice(0, 4)); let m = Number(per.start.slice(5, 7));
+  const ty = Number(nowKey.slice(0, 4)); const tm = Number(nowKey.slice(5, 7));
+  while (y < ty || (y === ty && m <= tm)) { months.push(y + '-' + String(m).padStart(2, '0')); m++; if (m > 12) { m = 1; y++; } }
+  const shown = months.slice(-12);
+  const counts = shown.map((mk) => mine.filter((st) => (st.date || '').slice(0, 7) === mk).length);
   const max = Math.max(1, ...counts);
   const bars = counts.map((c) => '<i class="' + (c ? 'on' : '') + '" style="height:' + (c ? Math.max(8, Math.round(c / max * 64)) : 4) + 'px"></i>').join('');
-  const labels = 'JFMAMJJASOND'.split('').map((m) => '<span>' + m + '</span>').join('');
-  const past = Object.entries((S.balances[k] && S.balances[k].stars) || {}).filter(([y]) => y !== year).sort((a, b) => b[0].localeCompare(a[0]));
-  const moments = mine.slice(0, 10).map((s) => '<div class="list-row" style="border:2px solid #FDE68A;box-shadow:0 3px 0 #FDE68A;border-radius:20px"><span class="group-ico" style="background:#FACC15;width:44px;height:44px;border-radius:14px">' + starIco(24, '#172033') + '</span><div class="grow col"><div style="font-weight:800;font-size:16px">' + h(s.what) + '</div>' + (s.note ? '<div class="small">' + h(s.note) + '</div>' : '') + '<div class="small muted">' + h(houseName(s.house)) + ' · ' + L.fmtKey(s.date) + ' · from ' + h(adultName(s.by)) + '</div></div></div>').join('') || '<div class="empty">No Above &amp; Beyond moments yet this year.</div>';
+  const labels = shown.map((mk) => '<span>' + 'JFMAMJJASOND'[Number(mk.slice(5, 7)) - 1] + '</span>').join('');
+  const past = pastTallies(k);
+  const moments = mine.slice(0, 10).map((s) => '<div class="list-row" style="border:2px solid #FDE68A;box-shadow:0 3px 0 #FDE68A;border-radius:20px"><span class="group-ico" style="background:#FACC15;width:44px;height:44px;border-radius:14px">' + starIco(24, '#172033') + '</span><div class="grow col"><div style="font-weight:800;font-size:16px">' + h(s.what) + '</div>' + (s.note ? '<div class="small">' + h(s.note) + '</div>' : '') + '<div class="small muted">' + h(houseName(s.house)) + ' · ' + L.fmtKey(s.date) + ' · from ' + h(adultName(s.by)) + '</div></div></div>').join('') || '<div class="empty">No Above &amp; Beyond moments yet this time.</div>';
   // Points earned per day this week
   const today = L.dateKey(new Date());
   let week = '';
@@ -490,9 +508,9 @@ function viewKidMe(k) {
   return '<div class="screen"><header class="band" style="--kid:' + colourOf(k) + '"><div class="row">' + backToPicker() + '<span class="avatar" style="width:64px;height:64px;border-radius:22px;font-size:30px;color:' + colourOf(k) + '">' + h(kidName(k)[0]) + '</span><div class="grow col"><h1 class="title-xl">' + h(kidName(k)) + '</h1><div class="small">' + points(k) + ' pts · ' + L.money(points(k), perDollar()) + '</div></div></div></header>' +
     '<div class="pad">' +
     '<div class="card" style="background:#172033;color:#fff;box-shadow:0 6px 0 #FACC15;border-radius:26px;padding:20px;gap:16px">' +
-    '<div class="row" style="gap:14px">' + starIco(64) + '<div class="col" style="gap:0"><div class="eyebrow" style="color:#FACC15">Above &amp; Beyond · ' + year + '</div><div style="font-family:var(--display);font-weight:600;font-size:48px;line-height:1">' + mine.length + '</div><div class="small" style="color:#C9D1E3">times this year</div></div></div>' +
+    '<div class="row" style="gap:14px">' + starIco(64) + '<div class="col" style="gap:0"><div class="eyebrow" style="color:#FACC15">Above &amp; Beyond · ' + sinceText() + '</div><div style="font-family:var(--display);font-weight:600;font-size:48px;line-height:1">' + mine.length + '</div><div class="small" style="color:#C9D1E3">times so far</div></div></div>' +
     '<div class="col" style="gap:6px"><div class="months" role="img" aria-label="Above and Beyond by month">' + bars + '</div><div class="mlabels" aria-hidden="true">' + labels + '</div></div>' +
-    (past.length ? '<div class="small" style="color:#C9D1E3">Past years: ' + past.map(([y, n]) => y + ' — ' + n).join(' · ') + '</div>' : '<div class="small" style="color:#C9D1E3">Counted separately from points. Each year\'s total stays in your profile.</div>') +
+    (past.length ? '<div class="small" style="color:#C9D1E3">Past tallies: ' + past.map((t) => h(t.label) + ' — ' + t.n).join(' · ') + '</div>' : '<div class="small" style="color:#C9D1E3">Counted separately from points. Each tally\'s total stays in your profile.</div>') +
     '</div>' +
     '<h2 style="font-size:22px;color:' + colourOf(k) + '">Recent moments</h2><div class="col" style="gap:10px">' + moments + '</div>' +
     '<h2 style="font-size:22px">My colour</h2><div class="swatches">' + sw + '</div>' +
@@ -612,7 +630,7 @@ function adminAB() {
   const presets = (S.config.abPresets || []).map((p) => '<button type="button" class="chip' + (f.what === p ? ' on' : '') + '" data-act="ab-what" data-what="' + h(p) + '" aria-pressed="' + (f.what === p) + '">' + h(p) + '</button>').join('');
   const names = f.kids.map(kidName);
   const btnLabel = names.length === 0 ? 'Pick who first' : 'Give ' + (names.length === 1 ? names[0] : names.length + ' kids') + ' a star';
-  const recent = S.stars.filter((s) => s.house === house).slice(0, 8).map((s) => '<div class="list-row">' + solidAvatar(s.kid, 'sm') + '<div class="grow col"><div style="font-weight:800">' + h(s.what) + '</div><div class="small muted">' + h(kidName(s.kid)) + ' · ' + L.fmtKey(s.date) + ' · ' + h(adultName(s.by)) + '</div></div><button type="button" class="icon-btn light" data-act="ab-del" data-id="' + h(s.id) + '" aria-label="Remove this star">' + ico('trash', 18, 2) + '</button></div>').join('');
+  const recent = S.stars.filter((s) => s.house === house && starPeriodOf(s) === curPeriod().id).slice(0, 8).map((s) => '<div class="list-row">' + solidAvatar(s.kid, 'sm') + '<div class="grow col"><div style="font-weight:800">' + h(s.what) + '</div><div class="small muted">' + h(kidName(s.kid)) + ' · ' + L.fmtKey(s.date) + ' · ' + h(adultName(s.by)) + '</div></div><button type="button" class="icon-btn light" data-act="ab-del" data-id="' + h(s.id) + '" aria-label="Remove this star">' + ico('trash', 18, 2) + '</button></div>').join('');
   return '<div class="screen"><header class="band gold"><button type="button" class="icon-btn dark" data-act="admin" data-sub="home" aria-label="Back">' + ico('back', 20, 2.2) + '</button><div class="row">' + starIco(48, '#422006') + '<div class="col" style="gap:0"><h1 class="title-xl">Above and Beyond</h1><div style="font-size:14px;font-weight:800">Recognise something great</div></div></div></header>' +
     '<form class="pad" data-form="ab">' +
     '<section class="col" style="gap:10px"><h2 style="font-size:20px">1. Who?</h2><div class="grid3">' + picks + '</div><div class="small muted">Pick more than one if they did it together.</div></section>' +
@@ -633,11 +651,12 @@ function submitAB(fd) {
   const now = new Date();
   const key = L.dateKey(now);
   const year = key.slice(0, 4);
+  const period = curPeriod().id;
   const house = adminHouse();
   const ops = [];
   for (const k of f.kids) {
-    ops.push({ op: 'set', path: 'stars/' + rid('star'), data: { kid: k, what, note: (fd.get('note') || '').toString().trim(), by: S.admin.as, house, at: now, date: key, year } });
-    ops.push({ op: 'update', path: 'balances/' + k, data: { ['stars.' + year]: inc(1) } });
+    ops.push({ op: 'set', path: 'stars/' + rid('star'), data: { kid: k, what, note: (fd.get('note') || '').toString().trim(), by: S.admin.as, house, at: now, date: key, year, period } });
+    ops.push({ op: 'update', path: 'balances/' + k, data: { ['stars.' + period]: inc(1) } });
   }
   if (other && fd.get('save') && !(S.config.abPresets || []).includes(other)) {
     ops.push({ op: 'update', path: 'config/main', data: { abPresets: (S.config.abPresets || []).concat([other]) } });
@@ -840,8 +859,7 @@ function adminSchedule() {
 function adminBalances() {
   const house = adminHouse();
   const kids = L.kidsForHouse(house, S.config);
-  const year = L.dateKey(new Date()).slice(0, 4);
-  const cards = kids.map((k) => '<div class="card" style="box-shadow:0 4px 0 ' + colourOf(k) + '"><div class="row">' + solidAvatar(k, 'sm') + '<div class="grow col"><div style="font-weight:800;font-size:17px">' + h(kidName(k)) + '</div><div class="small muted">' + starsThisYear(k).length + ' Above &amp; Beyond in ' + year + (heldFor(k) ? ' · ' + heldFor(k) + ' on hold' : '') + '</div></div><div class="col" style="align-items:flex-end;gap:0"><div style="font-family:var(--display);font-weight:600;font-size:24px">' + points(k) + '</div><div class="small" style="color:#9A3412">' + L.money(points(k), perDollar()) + '</div></div></div></div>').join('');
+  const cards = kids.map((k) => '<div class="card" style="box-shadow:0 4px 0 ' + colourOf(k) + '"><div class="row">' + solidAvatar(k, 'sm') + '<div class="grow col"><div style="font-weight:800;font-size:17px">' + h(kidName(k)) + '</div><div class="small muted">' + starsThisYear(k).length + ' Above &amp; Beyond ' + sinceText() + (heldFor(k) ? ' · ' + heldFor(k) + ' on hold' : '') + '</div></div><div class="col" style="align-items:flex-end;gap:0"><div style="font-family:var(--display);font-weight:600;font-size:24px">' + points(k) + '</div><div class="small" style="color:#9A3412">' + L.money(points(k), perDollar()) + '</div></div></div></div>').join('');
   const adj = S.adjustments.filter((a) => kids.includes(a.kid)).slice(0, 10).map((a) => '<div class="list-row"><div class="grow col"><div style="font-weight:800">' + h(kidName(a.kid)) + ' · ' + h(a.reason || 'Adjustment') + '</div><div class="small muted">' + (a.at ? L.fmtKey(L.dateKey(a.at)) : '') + ' · ' + h(adultName(a.by)) + '</div></div><div style="font-weight:800;color:' + (a.pts < 0 ? '#B91C1C' : '#15803D') + '">' + (a.pts > 0 ? '+' : '') + a.pts + '</div></div>').join('');
   return adminScreen(adminTop('Balances', { colour: '#15803D', shadow: '#166534' }) + cards +
     '<form data-form="adjust" class="card"><h2 style="font-size:18px">Add or take away points</h2>' +
@@ -865,6 +883,19 @@ function adminPeople() {
     '<p class="small muted" style="margin:0">Kids choose their own colour on their Me page.</p><button class="btn primary" type="submit">Save names</button></form>');
 }
 
+function tallyCard() {
+  const house = adminHouse();
+  const kids = L.kidsForHouse(house, S.config);
+  const now = kids.map((k) => '<div class="list-row" style="background:#FFFBEB">' + solidAvatar(k, 'sm') + '<div class="grow" style="font-weight:800">' + h(kidName(k)) + '</div><div class="row" style="gap:6px;font-family:var(--display);font-weight:600;font-size:22px">' + starIco(20, '#CA8A04') + starsThisYear(k).length + '</div></div>').join('');
+  const hist = (S.config.starHistory || []).slice().reverse().map((t) => '<div class="list-row"><div class="grow col"><div style="font-weight:800">' + h(t.label) + '</div><div class="small muted">' + shortDate(t.start) + ' ' + t.start.slice(0, 4) + ' – ' + shortDate(t.end) + ' ' + t.end.slice(0, 4) + '</div><div class="small">' + kids.map((k) => h(kidName(k)) + ' ' + ((t.totals || {})[k] || 0)).join(' · ') + '</div></div></div>').join('');
+  const suggested = 'Christmas ' + L.dateKey(new Date()).slice(0, 4);
+  return '<form data-form="close-tally" class="card" style="border:2px solid #FACC15"><h2 style="font-size:18px">Above and Beyond tally</h2>' +
+    '<p class="small muted" style="margin:0">Counting ' + sinceText() + '. Shared by both houses.</p><div class="col" style="gap:8px">' + now + '</div>' +
+    '<div class="field"><label for="t-label">Name for this tally</label><input class="input" id="t-label" name="label" maxlength="40" required value="' + h(suggested) + '"></div>' +
+    '<button type="submit" class="btn" style="border-color:#CA8A04;color:#713F12">' + starIco(18, '#CA8A04') + 'Close this tally &amp; start again</button>' +
+    '<p class="small muted" style="margin:0">Saves everyone\'s total, then all counts go back to 0. Points are not affected.</p>' +
+    (hist ? '<div class="lbl">Past tallies</div><div class="col" style="gap:8px">' + hist + '</div>' : '') + '</form>';
+}
 function adminSettings() {
   const cfg = S.config;
   const presets = (cfg.abPresets || []).map((p, i) => '<span class="chip blue" style="display:inline-flex;align-items:center;gap:6px;padding-right:6px">' + h(p) + '<button type="button" class="icon-btn light" style="width:32px;height:32px;border-radius:10px;border:none" data-act="del-preset" data-i="' + i + '" aria-label="Remove ' + h(p) + '">' + ico('trash', 14, 2) + '</button></span>').join('');
@@ -873,6 +904,7 @@ function adminSettings() {
     '<div class="field"><label for="m-pd">Points per $1</label><input class="input" id="m-pd" name="perDollar" type="number" min="1" required value="' + (cfg.pointsPerDollar || 100) + '"><div class="small muted">Now: 1,000 points = ' + L.money(1000, cfg.pointsPerDollar || 100) + '</div></div>' +
     '<div class="field"><label for="m-lot">Cash out in lots of (points)</label><input class="input" id="m-lot" name="lot" type="number" min="1" required value="' + (cfg.cashOutLot || 1000) + '"></div>' +
     '<button class="btn primary" type="submit">Save</button></form>' +
+    tallyCard() +
     '<div class="card"><h2 style="font-size:18px">Above and Beyond choices</h2><div class="chips">' + presets + '</div>' +
     '<form data-form="add-preset" class="row"><input class="input grow" name="p" maxlength="60" required aria-label="New choice" placeholder="Add a choice"><button class="btn" type="submit">Add</button></form></div>' +
     '<div class="card"><h2 style="font-size:18px">Backup</h2><p class="small muted" style="margin:0">Downloads everything as one file. Save it to Dropbox or your QNAP.</p><button type="button" class="btn" data-act="backup">' + ico('cloud', 18, 2) + 'Download backup</button></div>' +
@@ -937,7 +969,7 @@ const ACT = {
     const s = S.stars.find((x) => x.id === d.id);
     if (!s || !confirm('Remove this star from ' + kidName(s.kid) + '?')) return;
     touchAdmin();
-    write([{ op: 'delete', path: 'stars/' + s.id }, { op: 'update', path: 'balances/' + s.kid, data: { ['stars.' + s.year]: inc(-1) } }], 'Star removed');
+    write([{ op: 'delete', path: 'stars/' + s.id }, { op: 'update', path: 'balances/' + s.kid, data: { ['stars.' + starPeriodOf(s)]: inc(-1) } }], 'Star removed');
   },
   'edit-chore': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'chore', editId: d.id || null }; render(); window.scrollTo(0, 0); },
   'del-chore': (d) => { if (!confirm('Delete this chore? Points already earned stay.')) return; touchAdmin(); write([{ op: 'delete', path: 'chores/' + d.id }].concat(S.turns[d.id] ? [{ op: 'delete', path: 'turns/' + d.id }] : []), 'Chore deleted'); S.view = { screen: 'admin', sub: 'chores' }; render(); },
@@ -1039,6 +1071,20 @@ const FORMS = {
     if (!(pd > 0) || !(lot > 0)) { toast('Use numbers above 0', true); return; }
     touchAdmin();
     write([{ op: 'update', path: 'config/main', data: { pointsPerDollar: pd, cashOutLot: lot } }], 'Saved');
+  },
+  'close-tally': (fd) => {
+    const label = fd.get('label').toString().trim();
+    if (!label) { toast('Give this tally a name', true); return; }
+    const per = curPeriod();
+    const today = L.dateKey(new Date());
+    const totals = {};
+    for (const k of Object.keys(S.config.kids)) totals[k] = starsThisYear(k).length;
+    if (!confirm('Close "' + label + '"? Totals are saved and everyone\'s Above & Beyond count starts again at 0. This affects both houses.')) return;
+    touchAdmin();
+    write([{ op: 'update', path: 'config/main', data: {
+      starHistory: (S.config.starHistory || []).concat([{ id: per.id, label, start: per.start, end: today, totals, closedBy: S.admin.as }]),
+      starPeriod: { id: 'p' + today.replace(/-/g, '') + '-' + rid().slice(0, 4), start: today }
+    } }], 'Tally closed — counts start again');
   },
   'add-preset': (fd, form) => {
     const p = fd.get('p').toString().trim();
