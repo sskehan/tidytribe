@@ -1,10 +1,10 @@
-// Paste the values from Firebase here (see SETUP.md, step 4).
-// While these still say PASTE, the app runs in demo mode on this phone only.
+// Tidy Tribe connection details for the Firebase project "tidy-tribe-d406d".
+// These values are not secret; the security rules protect the data.
 export const FIREBASE_CONFIG = {
-  apiKey: 'PASTE_API_KEY',
-  authDomain: 'PASTE_PROJECT_ID.firebaseapp.com',
-  projectId: 'PASTE_PROJECT_ID',
-  storageBucket: 'PASTE_PROJECT_ID.appspot.com',
-  messagingSenderId: 'PASTE_SENDER_ID',
-  appId: 'PASTE_APP_ID'
+  apiKey: 'AIzaSyDGlhfqHYArrqdmknGRTvugfMjeeYpdfR8',
+  authDomain: 'tidy-tribe-d406d.firebaseapp.com',
+  projectId: 'tidy-tribe-d406d',
+  storageBucket: 'tidy-tribe-d406d.firebasestorage.app',
+  messagingSenderId: '383626682977',
+  appId: '1:383626682977:web:41bdd5b5fa2d9e6817c020'
 };
