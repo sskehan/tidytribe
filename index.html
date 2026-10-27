@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#172033">
+<meta name="description" content="Tidy Tribe — family chores, points and rewards">
+<title>Tidy Tribe</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css?v=1.01">
+</head>
+<body>
+<main id="app" aria-live="polite">
+  <div class="loading"><div class="logo-mark big" aria-hidden="true"></div><p>Loading Tidy Tribe…</p></div>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="app.js?v=1.01"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+  }
+</script>
+</body>
+</html>
