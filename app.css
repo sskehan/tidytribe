@@ -177,3 +177,5 @@ textarea.input { padding: 10px 12px; min-height: 80px; }
 
 form:not(:has(#c-share option[value="turns"]:checked)) .only-turns { display: none; }
 form:not(:has(#c-share option[value="daily"]:checked)) .only-daily { display: none; }
+.tile .pts { position: absolute; top: 10px; left: 10px; display: inline-flex; align-items: center; gap: 4px; background: #fff; color: var(--ink); border-radius: 999px; padding: 3px 9px 3px 4px; font-family: var(--body); font-weight: 800; font-size: 15px; }
+.tile { padding-top: 40px; }

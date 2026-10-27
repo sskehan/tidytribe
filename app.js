@@ -4,7 +4,7 @@ import { createStore, inc } from './store.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.03';
+const VERSION = '1.04';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -442,7 +442,7 @@ function viewSimpleToday(k, t) {
     body += partHead(p, items, k, t, 24) + '<div class="tiles">';
     for (const ch of items) {
       const done = !!t.cm[L.completionId(k, t.key, ch.id)];
-      body += '<button type="button" class="tile' + (done ? ' done' : '') + '" style="background:' + TILE_COLOURS[i++ % TILE_COLOURS.length] + '" data-act="tick" data-kid="' + k + '" data-chore="' + h(ch.id) + '" aria-pressed="' + done + '" aria-label="' + h(ch.name) + (done ? ', done' : '') + '">' + ico(choreIcon(ch.name), 52, 1.8) + '<span>' + h(ch.name) + '</span>' + (done ? '<span class="badge">' + ico('check', 22, 3.2) + '</span>' : '') + '</button>';
+      body += '<button type="button" class="tile' + (done ? ' done' : '') + '" style="background:' + TILE_COLOURS[i++ % TILE_COLOURS.length] + '" data-act="tick" data-kid="' + k + '" data-chore="' + h(ch.id) + '" aria-pressed="' + done + '" aria-label="' + h(ch.name) + ', ' + ch.pts + ' points' + (done ? ', done' : '') + '">' + '<span class="pts">' + coinIco(18) + '+' + ch.pts + '</span>' + ico(choreIcon(ch.name), 52, 1.8) + '<span>' + h(ch.name) + '</span>' + (done ? '<span class="badge">' + ico('check', 22, 3.2) + '</span>' : '') + '</button>';
     }
     body += '</div></section>';
   }
