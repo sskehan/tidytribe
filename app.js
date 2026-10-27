@@ -4,7 +4,7 @@ import { createStore, inc } from './store.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.01';
+const VERSION = '1.02';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -569,7 +569,7 @@ function adminScreen(inner) {
 function viewAdmin() {
   if (!adminOn()) { S.admin = null; S.view = { screen: 'picker' }; return isKidUser() ? viewKid() : viewPicker(); }
   const sub = S.view.sub || 'home';
-  const fn = { home: adminHome, ab: adminAB, chores: adminChores, chore: adminChoreEdit, copy: adminCopy, rewards: adminRewards, reward: adminRewardEdit, schedule: adminSchedule, balances: adminBalances, people: adminPeople, settings: adminSettings }[sub] || adminHome;
+  const fn = { home: adminHome, ab: adminAB, chores: adminChores, chore: adminChoreEdit, copy: adminCopy, other: adminOther, rewards: adminRewards, reward: adminRewardEdit, schedule: adminSchedule, balances: adminBalances, people: adminPeople, settings: adminSettings }[sub] || adminHome;
   return fn();
 }
 function adminHome() {
@@ -648,28 +648,52 @@ function submitAB(fd) {
 }
 function starsMsg(kids) { return 'Star given to ' + kids.map(kidName).join(' & ') + '!'; }
 
+// Chores from other houses this adult may see: only the kids who also stay at their house
+// (so Heidi never sees Brooke-only chores, and Brooke's name is left off shared ones).
+function otherHouseChores(house) {
+  const allowed = L.kidsForHouse(house, S.config);
+  return S.chores.filter((c) => c.house !== house)
+    .map((c) => Object.assign({}, c, { kids: c.kids.filter((k) => allowed.includes(k)) }))
+    .filter((c) => c.kids.length);
+}
+function choreRowsByTime(list, rowFn) {
+  let body = '';
+  for (const p of L.PARTS) {
+    const items = list.filter((c) => L.partOf(c.due).id === p.id).sort(L.byTime);
+    if (!items.length) continue;
+    body += '<h2 style="font-size:19px;color:' + p.colour + '">' + p.name + '</h2><div class="col" style="gap:8px">' + items.map(rowFn).join('') + '</div>';
+  }
+  return body;
+}
+function choreSummary(c) {
+  const g = groupOf(c);
+  const mode = L.shareMode(c);
+  const turn = S.turns[c.id] && S.turns[c.id].kid;
+  const shareTxt = mode === 'daily' ? ' · swaps daily' : mode === 'turns' ? ' · takes turns' + (turn && c.kids.includes(turn) ? ' (' + kidName(turn) + '\'s turn)' : '') : '';
+  return '<span class="pts-tile" style="background:' + g.colour + ';width:44px;height:44px;font-size:16px">' + c.pts + '</span><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + L.fmtTime(c.due) + ' · ' + h(g.name) + ' · ' + h(c.kids.map(kidName).join(', ')) + h(shareTxt) + (c.schoolOnly ? ' · school days' : '') + (c.schoolNext ? ' · night before school' : '') + (c.active === false ? ' · paused' : '') + '</div></div>';
+}
 function adminChores() {
   const house = adminHouse();
   const mine = S.chores.filter((c) => c.house === house);
-  let body = '';
-  for (const p of L.PARTS) {
-    const items = mine.filter((c) => L.partOf(c.due).id === p.id).sort(L.byTime);
-    if (!items.length) continue;
-    body += '<h2 style="font-size:19px;color:' + p.colour + '">' + p.name + '</h2><div class="col" style="gap:8px">' + items.map((c) => {
-      const g = groupOf(c);
-      const mode = L.shareMode(c);
-      const turn = S.turns[c.id] && S.turns[c.id].kid;
-      const shareTxt = mode === 'daily' ? ' · swaps daily' : mode === 'turns' ? ' · takes turns' + (turn ? ' (' + kidName(turn) + '\'s turn)' : '') : '';
-      return '<button type="button" class="list-row btnlike" data-act="edit-chore" data-id="' + h(c.id) + '"' + (c.active === false ? ' style="opacity:.6"' : '') + '><span class="pts-tile" style="background:' + g.colour + ';width:44px;height:44px;font-size:16px">' + c.pts + '</span><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + L.fmtTime(c.due) + ' · ' + h(g.name) + ' · ' + h(c.kids.map(kidName).join(', ')) + h(shareTxt) + (c.schoolOnly ? ' · school days' : '') + (c.schoolNext ? ' · night before school' : '') + (c.active === false ? ' · paused' : '') + '</div></div></button>';
-    }).join('') + '</div>';
-  }
+  let body = choreRowsByTime(mine, (c) => '<button type="button" class="list-row btnlike" data-act="edit-chore" data-id="' + h(c.id) + '"' + (c.active === false ? ' style="opacity:.6"' : '') + '>' + choreSummary(c) + '</button>');
   if (!body) body = '<div class="empty">No chores at ' + h(houseName(house)) + ' yet. Add one, or copy chores from the other house.</div>';
+  const otherHouses = Object.keys(S.config.houses).filter((x) => x !== house);
+  const views = otherHouses.map((x) => '<button type="button" class="btn full" style="border-color:#C7D2FE;color:#3730A3" data-act="other-house" data-house="' + h(x) + '">' + ico('house', 18, 2) + 'See ' + h(houseName(x)) + ' chores</button>').join('');
   return adminScreen(adminTop('Chores', { eyebrow: houseName(house), colour: '#1D4ED8', shadow: '#1E3A8A' }) +
-    '<div class="grid2"><button type="button" class="btn primary" data-act="edit-chore" data-id="">' + ico('plus', 18, 2.4) + 'Add chore</button><button type="button" class="btn" data-act="admin" data-sub="copy">Copy from other house</button></div>' + body);
+    '<div class="grid2"><button type="button" class="btn primary" data-act="edit-chore" data-id="">' + ico('plus', 18, 2.4) + 'Add chore</button><button type="button" class="btn" data-act="admin" data-sub="copy">Copy from other house</button></div>' + views + body);
+}
+function adminOther() {
+  const house = adminHouse();
+  const other = S.view.otherHouse;
+  const list = otherHouseChores(house).filter((c) => c.house === other);
+  const body = choreRowsByTime(list, (c) => '<div class="list-row"' + (c.active === false ? ' style="opacity:.6"' : '') + '>' + choreSummary(c) + '</div>') ||
+    '<div class="empty">' + h(houseName(other)) + ' has no chores yet.</div>';
+  return adminScreen(adminTop(houseName(other), { eyebrow: 'Chores · view only', colour: '#4F46E5', shadow: '#3730A3', back: 'chores' }) +
+    '<p class="small muted" style="margin:0">Only the adults at ' + h(houseName(other)) + ' can change these. To use one here, tap Copy from other house.</p>' + body);
 }
 function adminCopy() {
   const house = adminHouse();
-  const others = S.chores.filter((c) => c.house !== house).sort((a, b) => a.name.localeCompare(b.name));
+  const others = otherHouseChores(house).sort((a, b) => a.name.localeCompare(b.name));
   const rows = others.map((c) => '<div class="list-row"><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + h(houseName(c.house)) + ' · ' + L.fmtTime(c.due) + ' · ' + c.pts + ' pts · ' + h(c.kids.map(kidName).join(', ')) + '</div></div><button type="button" class="btn" style="min-height:44px" data-act="copy-chore" data-id="' + h(c.id) + '">Copy</button></div>').join('') || '<div class="empty">The other house has no chores yet.</div>';
   return adminScreen(adminTop('Copy a chore', { eyebrow: 'Into ' + houseName(house), colour: '#1D4ED8', shadow: '#1E3A8A', back: 'chores' }) + '<p class="small muted" style="margin:0">Copies go into ' + h(houseName(house)) + ' for kids who stay here. You can edit them after.</p><div class="col" style="gap:8px">' + rows + '</div>');
 }
@@ -918,6 +942,7 @@ const ACT = {
   'edit-chore': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'chore', editId: d.id || null }; render(); window.scrollTo(0, 0); },
   'del-chore': (d) => { if (!confirm('Delete this chore? Points already earned stay.')) return; touchAdmin(); write([{ op: 'delete', path: 'chores/' + d.id }].concat(S.turns[d.id] ? [{ op: 'delete', path: 'turns/' + d.id }] : []), 'Chore deleted'); S.view = { screen: 'admin', sub: 'chores' }; render(); },
   'copy-chore': (d) => copyChore(d.id),
+  'other-house': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'other', otherHouse: d.house }; render(); window.scrollTo(0, 0); },
   'edit-reward': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'reward', editId: d.id || null }; render(); window.scrollTo(0, 0); },
   'del-reward': (d) => { if (!confirm('Delete this reward?')) return; touchAdmin(); write([{ op: 'delete', path: 'rewards/' + d.id }], 'Reward deleted'); S.view = { screen: 'admin', sub: 'rewards' }; render(); },
   'del-override': (d) => { const o = (S.config.overrides || []).slice(); o.splice(Number(d.i), 1); touchAdmin(); write([{ op: 'update', path: 'config/main', data: { overrides: o } }], 'Removed'); },
