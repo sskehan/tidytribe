@@ -1,10 +1,11 @@
 // Tidy Tribe v1.0 — family chores, points and rewards.
 import * as L from './logic.js';
-import { createStore, inc } from './store.js';
+import { createStore, inc, COLLECTIONS } from './store.js';
+import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.04';
+const VERSION = '1.05';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -201,7 +202,7 @@ function subscribe() {
   S.subsKey = sk;
   const onErr = (e) => { console.error(e); S.error = e && e.code === 'permission-denied' ? 'This account is not allowed to read the family data. Check the sign-in name and the security rules (SETUP.md step 6).' : 'Connection problem: ' + (e.message || e); render(); };
   const st = S.store;
-  S.unsubs.push(st.listen('config', { doc: 'main' }, (d) => { S.config = d; render(); }, onErr));
+  S.unsubs.push(st.listen('config', { doc: 'main' }, (d) => { const first = S.config === undefined; S.config = d; render(); if (first) setTimeout(autoBackup, 4000); }, onErr));
   S.unsubs.push(st.listen('chores', {}, (rows) => { S.chores = rows; render(); }, onErr));
   S.unsubs.push(st.listen('rewards', {}, (rows) => { S.rewards = rows; render(); }, onErr));
   S.unsubs.push(st.listen('balances', {}, (rows) => { S.balances = Object.fromEntries(rows.map((r) => [r.id, r])); render(); }, onErr));
@@ -292,8 +293,7 @@ function runSetup() {
 }
 async function exportBackup() {
   try {
-    const all = await S.store.dumpAll();
-    const blob = new Blob([JSON.stringify({ app: 'Tidy Tribe', version: VERSION, exportedAt: new Date().toISOString(), data: all }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([B.makeFile(await S.store.dumpAll(), VERSION)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'tidytribe-backup-' + L.dateKey(new Date()) + '.json';
@@ -301,6 +301,89 @@ async function exportBackup() {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     toast('Backup downloaded');
   } catch (e) { toast('Backup failed: ' + (e.message || e), true); }
+}
+// ---------- Dropbox backups ----------
+let backingUp = false;
+async function runBackup(kind) {
+  if (backingUp) return false;
+  backingUp = true; render();
+  try { await B.backupNow(() => S.store.dumpAll(), VERSION, kind); return true; } catch (e) {
+    console.error(e);
+    B.setMeta({ error: (!navigator.onLine || e instanceof TypeError) ? "Couldn't reach Dropbox. It will try again later." : String(e.message || e) });
+    return false;
+  } finally { backingUp = false; render(); }
+}
+// Once a day, from any adult phone that has Dropbox connected (Wi-Fi only unless switched off).
+function autoBackup() {
+  if (!S.store || !isAdultUser() || !S.config || !B.connected() || backingUp || !navigator.onLine) return;
+  if (B.meta().lastSnapDay === new Date().toDateString() || B.blockedOnMobile()) return;
+  runBackup('');
+}
+// Replaces everything in Tidy Tribe with a backup. A safety copy goes to Dropbox first when connected.
+async function restoreData(data, whenText) {
+  if (!confirm('Restore the copy from ' + whenText + '?\n\nEverything in Tidy Tribe (both houses) is replaced with that copy.' + (B.connected() ? ' A safety copy of the current data is saved to Dropbox first.' : ''))) return;
+  touchAdmin();
+  if (B.connected()) {
+    const ok = await runBackup('before-restore');
+    if (!ok) { toast("Couldn't save a safety copy to Dropbox first, so nothing was changed.", true); return; }
+  }
+  try {
+    toast('Restoring…');
+    const current = await S.store.dumpAll();
+    const ops = [];
+    for (const col of COLLECTIONS) {
+      const want = data[col] || {};
+      const have = current[col] || {};
+      for (const id of Object.keys(have)) if (!(id in want)) ops.push({ op: 'delete', path: col + '/' + id });
+      for (const [id, doc] of Object.entries(want)) ops.push({ op: 'set', path: col + '/' + id, data: doc });
+    }
+    for (let i = 0; i < ops.length; i += 400) await S.store.batch(ops.slice(i, i + 400));
+    toast('Restored ✓');
+    S.view = { screen: 'admin', sub: 'settings' };
+    render();
+  } catch (e) { console.error(e); toast('Restore failed: ' + (e.message || e), true); }
+}
+function whenText(iso) {
+  const d = iso instanceof Date ? iso : new Date(iso);
+  if (isNaN(d)) return 'unknown time';
+  return L.fmtKey(L.dateKey(d)) + ' ' + L.dateKey(d).slice(0, 4) + ', ' + L.fmtClock(d);
+}
+function backupCard() {
+  const m = B.meta();
+  const on = B.connected();
+  const fileRow = '<div class="grid2"><button type="button" class="btn" data-act="backup">' + ico('cloud', 18, 2) + 'Download a copy</button>' +
+    '<label class="btn" style="cursor:pointer">' + ico('back', 18, 2).replace('M15 5l-7 7 7 7', 'M12 19V5M5 12l7-7 7 7') + 'Restore a file<input type="file" id="restore-file" accept=".json,application/json" class="sr"></label></div>';
+  if (!on) {
+    return '<div class="card" style="border:2px solid #BFDBFE"><h2 style="font-size:18px">Backup</h2>' +
+      '<p class="small" style="margin:0">Connect Dropbox and Tidy Tribe saves a full copy there once a day when this phone is on Wi‑Fi. It keeps 60 daily copies and one per month for 3 years, the same as Our Tax.</p>' +
+      (m.error ? '<div class="banner err">' + h(m.error) + '</div>' : '') +
+      (B.DBX_APP_KEY ? '' : '<div class="field"><label for="dbx-key">Dropbox App key</label><input class="input" id="dbx-key" autocomplete="off" autocapitalize="off" spellcheck="false" value="' + h(m.key || '') + '" placeholder="from the Dropbox App Console"><div class="small muted">Redirect URI for the App Console: <b>' + h(B.redirectUri()) + '</b></div></div>') +
+      '<button type="button" class="btn primary" data-act="dbx-connect">' + ico('cloud', 18, 2) + 'Connect Dropbox</button>' +
+      '<p class="small muted" style="margin:0">Connect it on one adult phone only, e.g. Shaun\'s. Tidy Tribe can only see its own folder in Dropbox › Apps.</p>' + fileRow + '</div>';
+  }
+  const status = backingUp ? 'Backing up…' : m.error ? 'Last try failed: ' + m.error : m.lastSnap ? 'Last backup: ' + whenText(new Date(m.lastSnap)) : 'No backup yet';
+  return '<div class="card" style="border:2px solid #BBF7D0"><h2 style="font-size:18px">Backup · Dropbox connected</h2>' +
+    '<div class="row" style="gap:8px">' + (m.error && !backingUp ? ico('clock', 18, 2, '#B45309') : ico('check', 18, 2.6, '#15803D')) + '<div class="small" style="font-weight:800">' + h(status) + '</div></div>' +
+    '<p class="small muted" style="margin:0">Backs up once a day while an adult phone has the app open. Daily copies are kept 60 days, monthly copies 3 years.</p>' +
+    '<label class="check"><input type="checkbox" id="dbx-wifi"' + (B.wifiOnly() ? ' checked' : '') + '><span style="font-weight:800">Only back up on Wi‑Fi</span></label>' +
+    '<div class="grid2"><button type="button" class="btn primary" data-act="dbx-now"' + (backingUp ? ' disabled' : '') + '>Back up now</button><button type="button" class="btn" data-act="admin" data-sub="restore">Restore from Dropbox</button></div>' +
+    fileRow +
+    '<button type="button" class="btn ghost-red" data-act="dbx-off">Disconnect Dropbox</button></div>';
+}
+function adminRestore() {
+  const st = S.snaps || { loading: true };
+  let body;
+  if (st.loading) body = '<div class="empty">Looking in Dropbox…</div>';
+  else if (st.error) body = '<div class="banner err">Couldn\'t list Dropbox backups: ' + h(st.error) + '</div>';
+  else if (!st.list.length) body = '<div class="empty">No backups in Dropbox yet.</div>';
+  else body = '<div class="col" style="gap:8px">' + st.list.slice(0, 80).map((e) => '<div class="list-row"><div class="grow col"><div style="font-weight:800">' + h(whenText(e.when)) + '</div><div class="small muted">' + h(e.kind) + ' · ' + Math.max(1, Math.round(e.size / 1024)) + ' KB</div></div><button type="button" class="btn" style="min-height:44px" data-act="restore-snap" data-path="' + h(e.path) + '" data-when="' + h(whenText(e.when)) + '">Use this</button></div>').join('') + '</div>';
+  return adminScreen(adminTop('Restore', { eyebrow: 'From Dropbox', colour: '#475569', shadow: '#334155', back: 'settings' }) +
+    '<p class="small muted" style="margin:0">Pick a copy to go back to. It replaces everything in Tidy Tribe for both houses. The current data is saved to Dropbox first.</p>' + body);
+}
+async function loadSnaps() {
+  S.snaps = { loading: true }; render();
+  try { S.snaps = { list: await B.listBackups() }; } catch (e) { S.snaps = { error: e.message || String(e) }; }
+  render();
 }
 
 // ---------- shared view parts ----------
@@ -587,7 +670,7 @@ function adminScreen(inner) {
 function viewAdmin() {
   if (!adminOn()) { S.admin = null; S.view = { screen: 'picker' }; return isKidUser() ? viewKid() : viewPicker(); }
   const sub = S.view.sub || 'home';
-  const fn = { home: adminHome, ab: adminAB, chores: adminChores, chore: adminChoreEdit, copy: adminCopy, other: adminOther, rewards: adminRewards, reward: adminRewardEdit, schedule: adminSchedule, balances: adminBalances, people: adminPeople, settings: adminSettings }[sub] || adminHome;
+  const fn = { home: adminHome, ab: adminAB, chores: adminChores, chore: adminChoreEdit, copy: adminCopy, other: adminOther, rewards: adminRewards, reward: adminRewardEdit, schedule: adminSchedule, balances: adminBalances, people: adminPeople, settings: adminSettings, restore: adminRestore }[sub] || adminHome;
   return fn();
 }
 function adminHome() {
@@ -907,7 +990,7 @@ function adminSettings() {
     tallyCard() +
     '<div class="card"><h2 style="font-size:18px">Above and Beyond choices</h2><div class="chips">' + presets + '</div>' +
     '<form data-form="add-preset" class="row"><input class="input grow" name="p" maxlength="60" required aria-label="New choice" placeholder="Add a choice"><button class="btn" type="submit">Add</button></form></div>' +
-    '<div class="card"><h2 style="font-size:18px">Backup</h2><p class="small muted" style="margin:0">Downloads everything as one file. Save it to Dropbox or your QNAP.</p><button type="button" class="btn" data-act="backup">' + ico('cloud', 18, 2) + 'Download backup</button></div>' +
+    backupCard() +
     '<div class="card"><h2 style="font-size:18px">This phone</h2><p class="small muted" style="margin:0">Signed in as ' + h(adultName(S.user) || S.user) + ' · Tidy Tribe v' + VERSION + (S.store.mode === 'demo' ? ' · demo mode' : '') + '</p>' +
     '<button type="button" class="btn danger" data-act="signout">Sign out of this phone</button>' +
     (S.store.mode === 'demo' ? '<button type="button" class="btn ghost-red" data-act="demo-reset">Clear demo data</button>' : '') + '</div>');
@@ -961,7 +1044,7 @@ const ACT = {
   'pin-adult': (d) => { const pins = S.config.pins || {}; S.pin = { adult: d.adult, entry: '', stage: pins[d.adult] ? 'enter' : 'create1', first: '', msg: '' }; render(); },
   'pin-cancel': () => { S.pin = null; S.view = isKidUser() ? { screen: 'kid', kid: S.user, tab: 'today' } : { screen: 'picker' }; render(); },
   lock: () => { S.admin = null; S.view = { screen: 'picker' }; render(); window.scrollTo(0, 0); },
-  admin: (d) => { touchAdmin(); S.view = { screen: 'admin', sub: d.sub }; render(); window.scrollTo(0, 0); },
+  admin: (d) => { touchAdmin(); S.view = { screen: 'admin', sub: d.sub }; render(); window.scrollTo(0, 0); if (d.sub === 'restore') loadSnaps(); },
   decide: (d) => decideRequest(d.id, d.ok === '1'),
   'ab-kid': (d) => { const f = S.form.ab; f.kids = f.kids.includes(d.kid) ? f.kids.filter((x) => x !== d.kid) : f.kids.concat([d.kid]); keepAbInputs(); render(); },
   'ab-what': (d) => { const f = S.form.ab; f.what = f.what === d.what ? '' : d.what; keepAbInputs(); render(); },
@@ -982,6 +1065,12 @@ const ACT = {
   'del-date': (d) => { touchAdmin(); write([{ op: 'update', path: 'config/main', data: { [d.field]: (S.config[d.field] || []).filter((x) => x !== d.d) } }], 'Removed'); },
   'del-preset': (d) => { const p = (S.config.abPresets || []).slice(); p.splice(Number(d.i), 1); touchAdmin(); write([{ op: 'update', path: 'config/main', data: { abPresets: p } }], 'Removed'); },
   backup: () => exportBackup(),
+  'dbx-connect': async () => { const k = document.getElementById('dbx-key'); try { await B.connect(k ? k.value : ''); } catch (e) { toast(e.message || String(e), true); } },
+  'dbx-now': async () => { touchAdmin(); if (await runBackup('manual')) toast('Backed up to Dropbox ✓'); else toast(B.meta().error || 'Backup failed', true); },
+  'dbx-off': () => { if (!confirm('Disconnect Dropbox on this phone? Backups already in Dropbox are kept.')) return; B.disconnect(); render(); toast('Dropbox disconnected'); },
+  'restore-snap': async (d) => {
+    try { toast('Downloading…'); const f = await B.readBackup(d.path); await restoreData(f.data, d.when); } catch (e) { toast(e.message || String(e), true); }
+  },
   'demo-reset': () => { if (confirm('Clear all demo data on this phone?')) { S.store.resetDemo(); S.admin = null; S.view = { screen: 'picker' }; render(); } }
 };
 function keepAbInputs() {
@@ -1110,6 +1199,14 @@ app.addEventListener('submit', (e) => {
   if (!fn) return;
   try { fn(new FormData(form), form); } catch (err) { console.error(err); toast('Oops: ' + err.message, true); }
 });
+app.addEventListener('change', async (e) => {
+  if (e.target.id === 'dbx-wifi') { B.setMeta({ wifiOnly: e.target.checked }); return; }
+  if (e.target.id === 'restore-file' && e.target.files && e.target.files[0]) {
+    const file = e.target.files[0];
+    e.target.value = '';
+    try { const f = B.parseFile(await file.text()); await restoreData(f.data, f.exportedAt ? whenText(f.exportedAt) : file.name); } catch (err) { toast(err.message || String(err), true); }
+  }
+});
 app.addEventListener('focusout', () => { setTimeout(() => { if (S.pendingRender) render(); }, 0); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && S.user && S.config !== undefined) { subscribe(); render(); } });
 setInterval(() => {
@@ -1117,10 +1214,14 @@ setInterval(() => {
   if (S.admin && !adminOn() && S.view.screen === 'admin') { S.admin = null; S.view = { screen: 'picker' }; }
   subscribe(); // re-subscribes after midnight so the new day's chores appear
   render();
+  autoBackup();
 }, 60000);
 
 // ---------- start ----------
 (async function boot() {
+  let dbxMsg = null;
+  try { dbxMsg = await B.handleReturn(); } catch (e) { dbxMsg = { ok: false, msg: String(e.message || e) }; }
+  if (dbxMsg) setTimeout(() => toast(dbxMsg.msg, !dbxMsg.ok), 600);
   try {
     S.store = await createStore(FIREBASE_CONFIG);
   } catch (e) {
