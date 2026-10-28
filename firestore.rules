@@ -78,6 +78,16 @@ service cloud.firestore {
       allow delete: if isAdult();
     }
 
+    // Medication notes per kid, shared by both houses. Heidi doesn't see Brooke's;
+    // Alex and Emma can only read their own.
+    function medsAdultOk(kid) {
+      return isAdult() && !(me() == 'heidi' && kid == 'brooke');
+    }
+    match /meds/{kid} {
+      allow read: if medsAdultOk(kid) || (isKid() && kid == me());
+      allow write: if medsAdultOk(kid);
+    }
+
     match /prefs/{kid} {
       allow read: if isMember();
       allow write: if isAdult()

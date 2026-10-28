@@ -27,8 +27,8 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; margin: 0; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .loading { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; font-weight: 800; color: var(--muted); }
-.logo-mark { width: 44px; height: 44px; border-radius: 14px; background: var(--ink) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23FACC15' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E") center/62% no-repeat; flex-shrink: 0; }
-.logo-mark.big { width: 72px; height: 72px; border-radius: 22px; }
+.logo-mark { width: 44px; height: 44px; border-radius: 12px; background: var(--ink) url('icon-192.png') center/cover no-repeat; flex-shrink: 0; }
+.logo-mark.big { width: 72px; height: 72px; border-radius: 18px; }
 
 .screen { min-height: 100vh; display: flex; flex-direction: column; }
 .screen.cool { background: var(--cool); }
@@ -179,3 +179,5 @@ form:not(:has(#c-share option[value="turns"]:checked)) .only-turns { display: no
 form:not(:has(#c-share option[value="daily"]:checked)) .only-daily { display: none; }
 .tile .pts { position: absolute; top: 10px; left: 10px; display: inline-flex; align-items: center; gap: 4px; background: #fff; color: var(--ink); border-radius: 999px; padding: 3px 9px 3px 4px; font-family: var(--body); font-weight: 800; font-size: 15px; }
 .tile { padding-top: 40px; }
+.note-line { display: flex; gap: 6px; align-items: flex-start; font-size: 13px; font-weight: 700; color: #831843; background: #FCE7F3; border-radius: 8px; padding: 4px 8px; white-space: pre-line; overflow-wrap: anywhere; }
+.note-line.plain { color: #334155; background: #F1F5F9; }

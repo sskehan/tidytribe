@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.05';
+const VERSION = '1.06';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -14,7 +14,7 @@ const h = L.esc;
 
 const S = {
   store: null, user: undefined, config: undefined,
-  chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [],
+  chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [],
   view: { screen: 'picker', tab: 'today' }, login: { who: null }, pin: null, admin: null, form: {},
   unsubs: [], subsKey: '', error: null, pendingRender: false
 };
@@ -82,7 +82,7 @@ function choreIcon(name) {
   if (n.includes('bed')) return 'bed';
   if (n.includes('breakfast') || n.includes('lunch') || n.includes('dinner') || n.includes('eat')) return 'food';
   if (n.includes('read') || n.includes('homework') || n.includes('book')) return 'book';
-  if (n.includes('gumm') || n.includes('medic') || n.includes('ritalin') || n.includes('tablet') || n.includes('vitamin')) return 'pill';
+  if (/\b(meds?|medic\w*|medicine|tablets?|pills?|capsules?|gumm\w*|vitamins?|ritalin)\b/.test(n)) return 'pill';
   if (n.includes('chook') || n.includes('chicken')) return 'chook';
   if (n.includes('table')) return 'table';
   if (n.includes('bag')) return 'bag';
@@ -199,10 +199,11 @@ function subscribe() {
   if (S.subsKey === sk) return;
   S.unsubs.forEach((u) => { try { u(); } catch (e) { /* ignore */ } });
   S.unsubs = [];
+  S.medsOn = false;
   S.subsKey = sk;
   const onErr = (e) => { console.error(e); S.error = e && e.code === 'permission-denied' ? 'This account is not allowed to read the family data. Check the sign-in name and the security rules (SETUP.md step 6).' : 'Connection problem: ' + (e.message || e); render(); };
   const st = S.store;
-  S.unsubs.push(st.listen('config', { doc: 'main' }, (d) => { const first = S.config === undefined; S.config = d; render(); if (first) setTimeout(autoBackup, 4000); }, onErr));
+  S.unsubs.push(st.listen('config', { doc: 'main' }, (d) => { S.config = d; render(); if (d && !S.medsOn) { subscribeMeds(); setTimeout(autoBackup, 4000); } }, onErr));
   S.unsubs.push(st.listen('chores', {}, (rows) => { S.chores = rows; render(); }, onErr));
   S.unsubs.push(st.listen('rewards', {}, (rows) => { S.rewards = rows; render(); }, onErr));
   S.unsubs.push(st.listen('balances', {}, (rows) => { S.balances = Object.fromEntries(rows.map((r) => [r.id, r])); render(); }, onErr));
@@ -213,11 +214,25 @@ function subscribe() {
   S.unsubs.push(st.listen('requests', { orderBy: ['createdAt', 'desc'], limit: 40 }, (rows) => { S.reqRecent = rows; render(); }, onErr));
   S.unsubs.push(st.listen('stars', { orderBy: ['at', 'desc'], limit: 3000 }, (rows) => { S.stars = rows; render(); }, onErr));
   S.unsubs.push(st.listen('adjustments', { orderBy: ['at', 'desc'], limit: 30 }, (rows) => { S.adjustments = rows; render(); }, onErr));
+  if (S.config) subscribeMeds();
+}
+// Medication notes: one document per kid. Each phone only listens to the kids it is allowed to see.
+function medsKids() {
+  if (!S.config) return [];
+  if (isKidUser()) return [S.user];
+  const h0 = L.adultHouse(S.user, S.config);
+  return h0 ? L.kidsForHouse(h0, S.config) : [];
+}
+function subscribeMeds() {
+  S.medsOn = true;
+  for (const k of medsKids()) {
+    S.unsubs.push(S.store.listen('meds', { doc: k }, (d) => { S.meds[k] = d; render(); }, (e) => console.warn('meds', k, e)));
+  }
 }
 function unsubscribeAll() {
   S.unsubs.forEach((u) => { try { u(); } catch (e) { /* ignore */ } });
-  S.unsubs = []; S.subsKey = '';
-  Object.assign(S, { config: undefined, chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [], error: null });
+  S.unsubs = []; S.subsKey = ''; S.medsOn = false;
+  Object.assign(S, { config: undefined, chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [], error: null });
 }
 
 // ---------- actions ----------
@@ -332,6 +347,7 @@ async function restoreData(data, whenText) {
     const current = await S.store.dumpAll();
     const ops = [];
     for (const col of COLLECTIONS) {
+      if (!(col in data)) continue; // not in this backup (or not readable by this adult): leave as is
       const want = data[col] || {};
       const have = current[col] || {};
       for (const id of Object.keys(have)) if (!(id in want)) ops.push({ op: 'delete', path: col + '/' + id });
@@ -369,6 +385,22 @@ function backupCard() {
     '<div class="grid2"><button type="button" class="btn primary" data-act="dbx-now"' + (backingUp ? ' disabled' : '') + '>Back up now</button><button type="button" class="btn" data-act="admin" data-sub="restore">Restore from Dropbox</button></div>' +
     fileRow +
     '<button type="button" class="btn ghost-red" data-act="dbx-off">Disconnect Dropbox</button></div>';
+}
+function adminMeds() {
+  const house = adminHouse();
+  const kids = L.kidsForHouse(house, S.config);
+  const cards = kids.map((k) => {
+    const m = S.meds[k] || {};
+    const hist = (m.history || []).slice(0, 6).map((e) => '<div class="list-row" style="background:#F8FAFC;align-items:flex-start"><div class="grow col"><div class="small" style="white-space:pre-line;font-weight:700;color:#334155">' + h(e.text || '(cleared)') + '</div><div class="small muted">Until ' + h(whenText(e.until || e.at)) + ' · set by ' + h(adultName(e.by)) + '</div></div></div>').join('');
+    return '<form data-form="meds" class="card" style="box-shadow:0 4px 0 ' + colourOf(k) + '"><input type="hidden" name="kid" value="' + k + '">' +
+      '<div class="row">' + solidAvatar(k, 'sm') + '<div class="grow col"><div style="font-weight:800;font-size:17px">' + h(kidName(k)) + '</div>' +
+      '<div class="small muted">' + (m.updatedAt ? 'Updated ' + h(whenText(m.updatedAt)) + ' by ' + h(adultName(m.by)) + (m.house ? ' at ' + h(houseName(m.house)) : '') : 'Nothing noted yet') + '</div></div></div>' +
+      '<div class="field"><label for="meds-' + k + '">Current medication</label><textarea class="input" id="meds-' + k + '" name="text" rows="3" maxlength="500" placeholder="e.g. Ritalin 10 mg, 1 tablet with breakfast">' + h(m.current || '') + '</textarea></div>' +
+      '<button type="submit" class="btn primary">Save for both houses</button>' +
+      (hist ? '<div class="lbl">Earlier</div><div class="col" style="gap:6px">' + hist + '</div>' : '') + '</form>';
+  }).join('');
+  return adminScreen(adminTop('Meds & notes', { eyebrow: 'Shared by both houses', colour: '#BE185D', shadow: '#9D174D' }) +
+    '<p class="small muted" style="margin:0">Write what each kid currently takes. It shows on their Meds chore at both houses, and every change is kept below with the date and who made it.</p>' + cards);
 }
 function adminRestore() {
   const st = S.snaps || { loading: true };
@@ -501,6 +533,14 @@ function partHead(p, items, k, t, size) {
   const doneN = items.filter((c) => t.cm[L.completionId(k, t.key, c.id)]).length;
   return '<section class="col" style="gap:' + (size > 21 ? 12 : 10) + 'px"><div class="group-head"><span class="group-ico" style="background:' + p.colour + '">' + ico(p.icon, 20, 2.2) + '</span><h2 style="font-size:' + size + 'px;color:' + p.colour + '">' + p.name + '</h2><span class="grow"></span><span class="count-pill" style="background:' + p.light + ';color:' + p.colour + '">' + doneN + ' of ' + items.length + '</span></div>';
 }
+function isMedsChore(ch) { return choreIcon(ch.name) === 'pill'; }
+function choreNotes(k, ch) {
+  let out = '';
+  const m = S.meds[k];
+  if (isMedsChore(ch) && m && m.current) out += '<div class="note-line">' + ico('pill', 15, 2.2) + '<span>' + h(m.current) + '</span></div>';
+  if (ch.note) out += '<div class="note-line plain">' + h(ch.note) + '</div>';
+  return out;
+}
 function choreRow(k, ch, t, g) {
   const c = t.cm[L.completionId(k, t.key, ch.id)];
   const done = !!c;
@@ -512,7 +552,7 @@ function choreRow(k, ch, t, g) {
   const locked = done && !isAdultUser() && c.undoUntil && c.undoUntil <= t.now;
   return '<div class="chore' + (done ? ' done' : '') + '" style="box-shadow:0 3px 0 ' + g.light + ';border-color:' + (done ? '' : g.light) + '">' +
     '<span class="pts-tile" style="background:' + (done ? 'var(--green)' : g.colour) + '">+' + ch.pts + '</span>' +
-    '<div class="grow col"><div class="chore-name">' + h(ch.name) + '</div><div class="meta">' + meta + '</div></div>' +
+    '<div class="grow col"><div class="chore-name">' + h(ch.name) + '</div>' + choreNotes(k, ch) + '<div class="meta">' + meta + '</div></div>' +
     '<button type="button" class="tick' + (done ? ' on' : '') + (locked ? ' locked' : '') + '" data-act="tick" data-kid="' + k + '" data-chore="' + h(ch.id) + '" aria-label="' + (done ? 'Undo ' : 'Mark done: ') + h(ch.name) + '" aria-pressed="' + done + '">' + (done ? ico('check', 24, 3.2) : '') + '</button></div>';
 }
 function viewSimpleToday(k, t) {
@@ -670,7 +710,7 @@ function adminScreen(inner) {
 function viewAdmin() {
   if (!adminOn()) { S.admin = null; S.view = { screen: 'picker' }; return isKidUser() ? viewKid() : viewPicker(); }
   const sub = S.view.sub || 'home';
-  const fn = { home: adminHome, ab: adminAB, chores: adminChores, chore: adminChoreEdit, copy: adminCopy, other: adminOther, rewards: adminRewards, reward: adminRewardEdit, schedule: adminSchedule, balances: adminBalances, people: adminPeople, settings: adminSettings, restore: adminRestore }[sub] || adminHome;
+  const fn = { home: adminHome, ab: adminAB, chores: adminChores, chore: adminChoreEdit, copy: adminCopy, other: adminOther, rewards: adminRewards, reward: adminRewardEdit, schedule: adminSchedule, balances: adminBalances, people: adminPeople, settings: adminSettings, restore: adminRestore, meds: adminMeds }[sub] || adminHome;
   return fn();
 }
 function adminHome() {
@@ -700,7 +740,7 @@ function adminHome() {
     '<section class="col" style="gap:10px"><h2 style="font-size:21px">Today</h2>' + prog + '</section>' +
     '<section class="col" style="gap:10px"><h2 style="font-size:21px">Manage</h2><div class="grid3">' +
     tile('chores', 'Chores', 'tasks', '#1D4ED8') + tile('rewards', 'Rewards', 'gift', '#DB2777') + tile('schedule', 'Schedule', 'cal', '#4F46E5') +
-    tile('balances', 'Balances', 'dollar', '#15803D') + tile('people', 'People &amp; PINs', 'people', '#0F766E') + tile('settings', 'Settings', 'gear', '#475569') +
+    tile('balances', 'Balances', 'dollar', '#15803D') + tile('people', 'People &amp; PINs', 'people', '#0F766E') + tile('settings', 'Settings', 'gear', '#475569') + tile('meds', 'Meds &amp; notes', 'pill', '#BE185D') +
     '</div></section></div></div>';
 }
 
@@ -772,7 +812,7 @@ function choreSummary(c) {
   const mode = L.shareMode(c);
   const turn = S.turns[c.id] && S.turns[c.id].kid;
   const shareTxt = mode === 'daily' ? ' · swaps daily' : mode === 'turns' ? ' · takes turns' + (turn && c.kids.includes(turn) ? ' (' + kidName(turn) + '\'s turn)' : '') : '';
-  return '<span class="pts-tile" style="background:' + g.colour + ';width:44px;height:44px;font-size:16px">' + c.pts + '</span><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + L.fmtTime(c.due) + ' · ' + h(g.name) + ' · ' + h(c.kids.map(kidName).join(', ')) + h(shareTxt) + (c.schoolOnly ? ' · school days' : '') + (c.schoolNext ? ' · night before school' : '') + (c.active === false ? ' · paused' : '') + '</div></div>';
+  return '<span class="pts-tile" style="background:' + g.colour + ';width:44px;height:44px;font-size:16px">' + c.pts + '</span><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + L.fmtTime(c.due) + ' · ' + h(g.name) + ' · ' + h(c.kids.map(kidName).join(', ')) + h(shareTxt) + (c.schoolOnly ? ' · school days' : '') + (c.schoolNext ? ' · night before school' : '') + (c.active === false ? ' · paused' : '') + '</div>' + (c.note ? '<div class="small" style="color:#334155">' + h(c.note) + '</div>' : '') + '</div>';
 }
 function adminChores() {
   const house = adminHouse();
@@ -832,7 +872,8 @@ function adminChoreEdit() {
     '<div class="field"><label for="c-name">Chore name</label><input class="input" id="c-name" name="name" required maxlength="60" value="' + h(v.name) + '"></div>' +
     '<div class="grid2"><div class="field"><label for="c-group">Group</label><select class="input" id="c-group" name="group">' + L.GROUPS.map((x) => '<option value="' + x.id + '"' + (x.id === v.group ? ' selected' : '') + '>' + x.name + '</option>').join('') + '</select></div>' +
     '<div class="field"><label for="c-due">Due by</label><input class="input" id="c-due" name="due" type="time" required value="' + h(v.due) + '"></div></div>' +
-    '<div class="field"><label for="c-pts">Points</label><input class="input" id="c-pts" name="pts" type="number" min="0" max="1000" step="1" required value="' + v.pts + '"><div class="small muted">' + perDollar() + ' points = $1</div></div></div>' +
+    '<div class="field"><label for="c-pts">Points</label><input class="input" id="c-pts" name="pts" type="number" min="0" max="1000" step="1" required value="' + v.pts + '"><div class="small muted">' + perDollar() + ' points = $1</div></div>' +
+    '<div class="field"><label for="c-note">Note (optional)</label><textarea class="input" id="c-note" name="note" maxlength="200" rows="2" placeholder="e.g. Take with breakfast">' + h(v.note || '') + '</textarea></div></div>' +
     '<div class="card"><div class="lbl">Who does it</div><div class="chips">' + kids.map((k) => '<label class="check" style="min-height:44px;padding:0 14px;border-radius:999px;border:2px solid ' + colourOf(k) + '"><input type="checkbox" name="kids" value="' + k + '"' + (v.kids.includes(k) ? ' checked' : '') + ' style="accent-color:' + colourOf(k) + '"><span style="font-weight:800">' + h(kidName(k)) + '</span></label>').join('') + '</div>' +
     '<div class="field"><label for="c-share">If more than one kid is ticked</label><select class="input" id="c-share" name="rotate">' +
     '<option value=""' + (mode === 'each' ? ' selected' : '') + '>Each kid does their own</option>' +
@@ -860,7 +901,7 @@ function submitChore(fd) {
   if (!days.length) { toast('Pick at least one day', true); return; }
   const pts = Math.max(0, Math.round(Number(fd.get('pts')) || 0));
   const share = kids.length > 1 ? (fd.get('rotate') || '') : '';
-  const data = { name, group: fd.get('group'), due: fd.get('due'), pts, kids, house, days, rotate: share || false, rotateOffset: Number(fd.get('rotateOffset')) || 0, schoolOnly: !!fd.get('schoolOnly'), schoolNext: !!fd.get('schoolNext'), active: !!fd.get('active') };
+  const data = { name, group: fd.get('group'), due: fd.get('due'), pts, kids, house, days, rotate: share || false, rotateOffset: Number(fd.get('rotateOffset')) || 0, schoolOnly: !!fd.get('schoolOnly'), schoolNext: !!fd.get('schoolNext'), active: !!fd.get('active'), note: (fd.get('note') || '').toString().trim() };
   const ops = [{ op: 'set', path: 'chores/' + id, data }];
   if (share === 'turns') {
     const cur = S.turns[id] && S.turns[id].kid;
@@ -1160,6 +1201,16 @@ const FORMS = {
     if (!(pd > 0) || !(lot > 0)) { toast('Use numbers above 0', true); return; }
     touchAdmin();
     write([{ op: 'update', path: 'config/main', data: { pointsPerDollar: pd, cashOutLot: lot } }], 'Saved');
+  },
+  meds: (fd) => {
+    const kid = fd.get('kid');
+    const text = (fd.get('text') || '').toString().trim();
+    const m = S.meds[kid] || {};
+    if ((m.current || '') === text) { toast('No change to save'); return; }
+    const now = new Date();
+    const history = (m.current || m.updatedAt) ? [{ text: m.current || '', at: m.updatedAt || now, until: now, by: m.by || '', house: m.house || '' }].concat(m.history || []).slice(0, 30) : (m.history || []);
+    touchAdmin();
+    write([{ op: 'set', path: 'meds/' + kid, data: { current: text, updatedAt: now, by: S.admin.as, house: adminHouse(), history } }], 'Saved for both houses');
   },
   'close-tally': (fd) => {
     const label = fd.get('label').toString().trim();

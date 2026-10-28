@@ -2,7 +2,7 @@
 // otherwise a demo store saved on this device only (for trying the app out).
 const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
 export const EMAIL_DOMAIN = '@tidytribe.app';
-export const COLLECTIONS = ['config', 'chores', 'rewards', 'balances', 'completions', 'requests', 'stars', 'adjustments', 'prefs', 'turns'];
+export const COLLECTIONS = ['config', 'chores', 'rewards', 'balances', 'completions', 'requests', 'stars', 'adjustments', 'prefs', 'turns', 'meds'];
 
 function isFilled(cfg) {
   return cfg && cfg.apiKey && !/PASTE/i.test(cfg.apiKey) && cfg.projectId && !/PASTE/i.test(cfg.projectId);
@@ -89,9 +89,14 @@ async function firebaseStore(cfg) {
     async dumpAll() {
       const out = {};
       for (const name of COLLECTIONS) {
-        const s = await fsM.getDocs(fsM.collection(db, name));
-        out[name] = {};
-        s.forEach((d) => { out[name][d.id] = conv(d.data()); });
+        try {
+          const s = await fsM.getDocs(fsM.collection(db, name));
+          out[name] = {};
+          s.forEach((d) => { out[name][d.id] = conv(d.data()); });
+        } catch (e) {
+          // Some adults can't read everything (e.g. another house's private notes). Leave it out of this copy.
+          if (!(e && e.code === 'permission-denied')) throw e;
+        }
       }
       return out;
     }
