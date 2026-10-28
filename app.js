@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.11';
+const VERSION = '1.13';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -178,7 +178,8 @@ function todayInfo(k) {
   for (const ch of list) {
     const c = cm[L.completionId(k, key, ch.id)];
     if (c) { done++; pts += c.pts || 0; }
-    if (!ch.optional) { need++; if (c) needDone++; }
+    // Take-turns chores (bins, dishwasher) are done when needed, so they don't hold up the Magic button.
+    if (!ch.optional && L.shareMode(ch) !== 'turns') { need++; if (c) needDone++; }
   }
   // need / needDone: chores that count for the Magic button (optional ones don't).
   return { now, key, list, cm, done, pts, total: list.length, need, needDone };
@@ -186,7 +187,7 @@ function todayInfo(k) {
 // ---------- Magic button ----------
 function magicOn(k) { return L.magicCfg(S.config).kids.includes(k); }
 function magicDates(k) { return new Set(S.magic.filter((c) => c.kid === k).map((c) => c.date)); }
-function hasChoresOn(k, key) { return L.choresFor(k, key, S.chores, S.config).some((c) => !c.optional); }
+function hasChoresOn(k, key) { return L.choresFor(k, key, S.chores, S.config).some((c) => !c.optional && L.shareMode(c) !== 'turns'); }
 function magicRun(k) {
   const today = L.dateKey(new Date());
   const tapped = magicDates(k);
@@ -985,7 +986,7 @@ function choreSummary(c) {
   const g = groupOf(c);
   const mode = L.shareMode(c);
   const turn = S.turns[c.id] && S.turns[c.id].kid;
-  const shareTxt = mode === 'daily' ? ' · swaps daily' : mode === 'turns' ? ' · takes turns' + (turn && c.kids.includes(turn) ? ' (' + kidName(turn) + '\'s turn)' : '') : '';
+  const shareTxt = mode === 'daily' ? ' · swaps daily (' + kidName(L.dailyWho(c, L.dateKey(new Date()))) + ' today)' : mode === 'turns' ? ' · takes turns' + (turn && c.kids.includes(turn) ? ' (' + kidName(turn) + '\'s turn)' : '') : '';
   return '<span class="pts-tile" style="background:' + g.colour + ';width:44px;height:44px;font-size:16px">' + c.pts + '</span><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + L.fmtTime(c.due) + ' · ' + h(g.name) + ' · ' + h(c.kids.map(kidName).join(', ')) + h(shareTxt) + (c.schoolOnly ? ' · school days' : '') + (c.schoolNext ? ' · night before school' : '') + (c.optional ? ' · optional' : '') + (c.active === false ? ' · paused' : '') + '</div>' + (c.note ? '<div class="small" style="color:#334155">' + h(c.note) + '</div>' : '') + '</div>';
 }
 function adminChores() {
@@ -1036,6 +1037,7 @@ function adminChoreEdit() {
   const house = c ? c.house : choreHouse();
   if (id && !c) { S.view.sub = 'chores'; return adminChores(); }
   const v = c || { name: '', group: 'evening', due: '19:00', pts: 5, kids: [], days: [0, 1, 2, 3, 4, 5, 6], rotate: false, rotateOffset: 0, schoolOnly: false, schoolNext: false, active: true };
+  const todayWho = L.shareMode(v) === 'daily' ? L.dailyWho(v, L.dateKey(new Date())) : v.kids[0];
   const kids = L.kidsForHouse(house, S.config);
   const g = L.GROUPS.find((x) => x.id === v.group) || L.GROUPS[0];
   const mode = v.rotate === 'turns' ? 'turns' : v.rotate ? 'daily' : 'each';
@@ -1056,9 +1058,9 @@ function adminChoreEdit() {
     '<option value=""' + (mode === 'each' ? ' selected' : '') + '>Each kid does their own</option>' +
     '<option value="turns"' + (mode === 'turns' ? ' selected' : '') + '>Take turns — stays with them until done</option>' +
     '<option value="daily"' + (mode === 'daily' ? ' selected' : '') + '>Swap each day</option></select>' +
-    '<div class="small muted">"Take turns" is for bins: whoever has it keeps it until they take it out, then it passes on.</div></div>' +
+    '<div class="small muted">"Take turns" is for bins: whoever has it keeps it until they take it out, then it passes on. Done when needed, so it never holds up the Magic button.</div></div>' +
     '<div class="field only-turns"><label for="c-turn">Whose turn is it now?</label><select class="input" id="c-turn" name="turn"><option value="">— no change —</option>' + kids.map((k) => '<option value="' + k + '"' + (turnNow === k ? ' selected' : '') + '>' + h(kidName(k)) + '</option>').join('') + '</select></div>' +
-    '<div class="field only-daily"><label for="c-off">Swap each day: who goes first?</label><select class="input" id="c-off" name="rotateOffset"><option value="0"' + (!v.rotateOffset ? ' selected' : '') + '>First kid ticked</option><option value="1"' + (v.rotateOffset ? ' selected' : '') + '>Second kid ticked</option></select></div>' +
+    '<div class="field only-daily"><label for="c-off">Swap each day: who does it today (' + h(L.fmtKey(L.dateKey(new Date()))) + ')?</label><select class="input" id="c-off" name="todayKid">' + kids.map((k) => '<option value="' + k + '"' + (todayWho === k ? ' selected' : '') + '>' + h(kidName(k)) + '</option>').join('') + '</select><div class="small muted">Then it swaps every day after that.</div></div>' +
     '<div class="lbl">Repeat on</div><div class="days">' + order.map((d) => '<label><input type="checkbox" name="days" value="' + d + '"' + (v.days.includes(d) ? ' checked' : '') + ' aria-label="' + dayFull[d] + '"><span aria-hidden="true">' + dayNames[d] + '</span></label>').join('') + '</div>' +
     '<label class="check"><input type="checkbox" name="schoolOnly"' + (v.schoolOnly ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">School days only</span><span class="small muted">Hidden on weekends, public holidays and school holidays</span></span></label>' +
     '<label class="check"><input type="checkbox" name="schoolNext"' + (v.schoolNext ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">Only the night before a school day</span><span class="small muted">For things like packing the school bag</span></span></label>' +
@@ -1081,7 +1083,8 @@ function submitChore(fd) {
   if (!days.length) { toast('Pick at least one day', true); return; }
   const pts = Math.max(0, Math.round(Number(fd.get('pts')) || 0));
   const share = kids.length > 1 ? (fd.get('rotate') || '') : '';
-  const data = { name, group: fd.get('group'), due: fd.get('due'), pts, kids, house, days, rotate: share || false, rotateOffset: Number(fd.get('rotateOffset')) || 0, schoolOnly: !!fd.get('schoolOnly'), schoolNext: !!fd.get('schoolNext'), optional: !!fd.get('optional'), active: !!fd.get('active'), note: (fd.get('note') || '').toString().trim() };
+  if (share === 'daily' && !kids.includes(fd.get('todayKid'))) { toast('Pick who does it today from the kids ticked', true); return; }
+  const data = { name, group: fd.get('group'), due: fd.get('due'), pts, kids, house, days, rotate: share || false, rotateOffset: share === 'daily' ? L.offsetFor(kids, fd.get('todayKid'), L.dateKey(new Date())) : 0, schoolOnly: !!fd.get('schoolOnly'), schoolNext: !!fd.get('schoolNext'), optional: !!fd.get('optional'), active: !!fd.get('active'), note: (fd.get('note') || '').toString().trim() };
   const ops = [{ op: 'set', path: 'chores/' + id, data }];
   if (share === 'turns') {
     const cur = S.turns[id] && S.turns[id].kid;

@@ -79,6 +79,9 @@ export function addDays(key, n) {
   return t.getUTCFullYear() + '-' + pad(t.getUTCMonth() + 1) + '-' + pad(t.getUTCDate());
 }
 export function dayNumber(key) { return Math.round(keyToLocalMs(key) / DAY); }
+// "Swap each day" chores: who has it on a date (when all its kids are at that house), and the offset that gives `pick` the chore on `key`.
+export function dailyWho(ch, key) { const n = (ch.kids || []).length; if (!n) return null; return ch.kids[(((dayNumber(key) + (ch.rotateOffset || 0)) % n) + n) % n]; }
+export function offsetFor(kids, pick, key) { const n = kids.length; const i = kids.indexOf(pick); if (!n || i < 0) return 0; return (((i - dayNumber(key)) % n) + n) % n; }
 // Real Date of the next Sydney midnight after `now`.
 export function nextMidnight(now) {
   const offset = localMs(now) - Math.floor(now.getTime() / 60000) * 60000;

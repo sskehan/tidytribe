@@ -72,8 +72,9 @@ export const SEED_CHORES = [
   c('tables', 'Wipe down & clear tables/chairs after dinner', 'evening', '21:00', 5, ['alex'], 'dad'),
   // Emma
   c('emma-meds', 'Meds', 'evening', '20:00', 10, ['emma'], 'dad'),
-  c('table-set', 'Set the dinner table', 'evening', '19:00', 5, ['emma'], 'dad'),
-  c('emma-dishes', 'Dry dishes', 'evening', '21:30', 5, ['emma'], 'dad'),
+  // Alex and Emma swap each day (Alex on Wed 28 Oct 2026, Emma the next day, and so on)
+  c('table-set', 'Set the dinner table', 'evening', '19:00', 5, ['alex', 'emma'], 'dad', { rotate: 'daily', rotateOffset: 0 }),
+  c('emma-dishes', 'Dry dishes', 'evening', '21:30', 5, ['alex', 'emma'], 'dad', { rotate: 'daily', rotateOffset: 0 }),
   // Brooke
   c('clothes', 'Change clothes', 'morning', '08:00', 2, ['brooke'], 'dad'),
   c('washup', 'Wash-up / shower', 'morning', '08:00', 2, ['brooke'], 'dad'),
