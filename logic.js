@@ -289,12 +289,13 @@ export function penaltyPeriod(t, config) {
   return { start: a + n * WEEK, end: a + (n + 1) * WEEK };
 }
 // Chores due for a kid between local times start and end, and how many were ticked.
-// Take-turns chores only count when this kid did them (past turns aren't known).
+// Take-turns chores only count when this kid did them (past turns aren't known). Optional chores don't count.
 export function periodChores(kidId, start, end, chores, config, doneIds) {
   let due = 0;
   let done = 0;
-  const fixed = chores.filter((c) => shareMode(c) !== 'turns');
-  const turnsCh = chores.filter((c) => shareMode(c) === 'turns' && c.active && c.kids && c.kids.includes(kidId));
+  const req = chores.filter((c) => !c.optional);
+  const fixed = req.filter((c) => shareMode(c) !== 'turns');
+  const turnsCh = req.filter((c) => shareMode(c) === 'turns' && c.active && c.kids && c.kids.includes(kidId));
   const last = msKey(end - 1);
   for (let d = msKey(start); d <= last; d = addDays(d, 1)) {
     for (const ch of choresFor(kidId, d, fixed, config)) {

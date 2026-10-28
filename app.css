@@ -81,6 +81,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 600; margin: 0; }
 .tag.late { background: var(--red); }
 .tag.turn { background: #4F46E5; }
 .tag.off { background: #64748B; }
+.tag.opt { background: #0D9488; }
 .tick { width: 48px; height: 48px; border-radius: 999px; border: 3px solid var(--ink); background: #fff; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .tick.on { border: none; background: var(--green); color: #fff; }
 .tick.locked { opacity: .6; }
