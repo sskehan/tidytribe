@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.08';
+const VERSION = '1.10';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -129,6 +129,8 @@ function houseName(hid) { return (S.config.houses[hid] && S.config.houses[hid].n
 function kidName(k) { return (S.config.kids[k] && S.config.kids[k].name) || k; }
 function adultName(a) { return (S.config.adults && S.config.adults[a] && S.config.adults[a].name) || (a ? a[0].toUpperCase() + a.slice(1) : ''); }
 function colourOf(k) { return L.kidColour(k, S.config, S.prefs); }
+// Inline style for anything painted in the kid's colour: background colour, readable text, deep shade for text on white.
+function kidVars(k) { const c = colourOf(k); const light = L.inkOn(c) !== '#FFFFFF'; return '--kid:' + c + ';--kid-ink:' + L.inkOn(c) + ';--kid-deep:' + L.deepOf(c) + ';--kid-track:' + (light ? 'rgba(23,32,51,.14)' : 'rgba(255,255,255,.28)') + ';--kid-btn:' + (light ? 'rgba(255,255,255,.55)' : 'rgba(255,255,255,.2)'); }
 function deviceHouse() { return isAdultUser() ? L.adultHouse(S.user, S.config) : null; }
 function adminHouse() { return S.admin ? L.adultHouse(S.admin.as, S.config) : null; }
 function isOwner() { return !!S.admin && S.admin.as === ((S.config && S.config.owner) || 'shaun'); }
@@ -578,10 +580,10 @@ async function loadSnaps() {
 // ---------- shared view parts ----------
 function avatar(k, cls) {
   const c = colourOf(k);
-  return '<span class="avatar ' + (cls || '') + '" style="color:' + c + '">' + h(kidName(k)[0]) + '</span>';
+  return '<span class="avatar ' + (cls || '') + '" style="color:' + L.deepOf(c) + '">' + h(kidName(k)[0]) + '</span>';
 }
 function solidAvatar(k, cls) {
-  return '<span class="avatar solid ' + (cls || '') + '" style="background:' + colourOf(k) + '">' + h(kidName(k)[0]) + '</span>';
+  return '<span class="avatar solid ' + (cls || '') + '" style="background:' + colourOf(k) + ';color:' + L.inkOn(colourOf(k)) + '">' + h(kidName(k)[0]) + '</span>';
 }
 function kidNav(tab) {
   const b = (id, label, icon) => '<button type="button" data-act="tab" data-tab="' + id + '" class="' + (tab === id ? 'on' : '') + '" aria-current="' + (tab === id ? 'page' : 'false') + '">' + ico(icon, 24, tab === id ? 2.2 : 2) + label + '</button>';
@@ -644,7 +646,7 @@ function viewPicker() {
     const t = todayInfo(k);
     const left = t.total - t.done;
     const summary = away ? 'At ' + houseName(here) : (t.total ? (left ? left + ' chore' + (left === 1 ? '' : 's') + ' left today' : 'All done today!') : 'No chores today');
-    return '<button type="button" class="kidcard" data-act="open-kid" data-kid="' + k + '" style="background:' + colourOf(k) + (away ? ';opacity:.7' : '') + '">' +
+    return '<button type="button" class="kidcard" data-act="open-kid" data-kid="' + k + '" style="' + kidVars(k) + ';background:' + colourOf(k) + ';color:' + L.inkOn(colourOf(k)) + (away ? ';opacity:.7' : '') + '">' +
       avatar(k) + '<span class="grow col"><span style="font-family:var(--display);font-weight:600;font-size:24px">' + h(kidName(k)) + '</span><span class="small">' + h(summary) + '</span></span>' +
       '<span class="col" style="align-items:flex-end;gap:6px"><span class="pill white">' + coinIco(18) + points(k) + '</span><span class="pill navy">' + starIco(16) + starsThisYear(k).length + '</span></span></button>';
   }).join('');
@@ -661,7 +663,7 @@ function viewPicker() {
 function kidBand(k, t) {
   const here = L.houseAt(k, L.localMs(t.now), S.config);
   const pct = t.total ? Math.round(t.done / t.total * 100) : 0;
-  return '<header class="band" style="--kid:' + colourOf(k) + '">' +
+  return '<header class="band" style="' + kidVars(k) + '">' +
     '<div class="row">' + backToPicker() +
     '<div class="grow col" style="gap:0"><h1 class="title-xl" style="font-size:28px">Hi ' + h(kidName(k)) + '</h1><div class="row small" style="gap:6px">' + ico('house', 14, 2.2) + 'At ' + h(houseName(here)) + '</div></div>' + avatar(k) + '</div>' +
     '<div class="grid2"><div class="stat"><div class="lbl">' + coinIco(16) + 'Points</div><div class="num">' + points(k) + '</div><div class="sub">= ' + L.money(points(k), perDollar()) + '</div></div>' +
@@ -728,7 +730,7 @@ function viewSimpleToday(k, t) {
     }
     body += '</div></section>';
   }
-  const head = '<header class="band" style="--kid:' + colourOf(k) + '"><div class="row">' + backToPicker() + avatar(k) + '<h1 class="title-xl grow">' + h(kidName(k)) + '</h1></div>' +
+  const head = '<header class="band" style="' + kidVars(k) + '"><div class="row">' + backToPicker() + avatar(k) + '<h1 class="title-xl grow">' + h(kidName(k)) + '</h1></div>' +
     '<div class="grid2"><div class="stat row" style="flex-direction:row;align-items:center;gap:10px">' + coinIco(36) + '<span class="num">' + points(k) + '</span></div><div class="stat dark row" style="flex-direction:row;align-items:center;gap:10px">' + starIco(36) + '<span class="num" style="color:#FACC15">' + starsThisYear(k).length + '</span></div></div></header>';
   return '<div class="screen">' + head + '<div class="pad">' + body + '</div>' + kidNav('today') + '</div>';
 }
@@ -791,8 +793,8 @@ function viewKidMe(k) {
     const n = S.completions.filter((c) => c.kid === k && c.date === d && c.choreId !== 'magic').length;
     week += '<div class="list-row"><div class="grow" style="font-weight:800">' + (i === 0 ? 'Today' : L.fmtKey(d)) + '</div><div class="small muted">' + n + ' chore' + (n === 1 ? '' : 's') + '</div><div style="font-weight:800;color:#9A3412;min-width:56px;text-align:right">+' + pts + '</div></div>';
   }
-  const sw = L.KID_COLOURS.map((c) => '<button type="button" class="swatch' + (colourOf(k) === c ? ' on' : '') + '" style="background:' + c + '" data-act="colour" data-kid="' + k + '" data-colour="' + c + '" aria-label="Colour ' + c + '" aria-pressed="' + (colourOf(k) === c) + '"></button>').join('');
-  return '<div class="screen"><header class="band" style="--kid:' + colourOf(k) + '"><div class="row">' + backToPicker() + '<span class="avatar" style="width:64px;height:64px;border-radius:22px;font-size:30px;color:' + colourOf(k) + '">' + h(kidName(k)[0]) + '</span><div class="grow col"><h1 class="title-xl">' + h(kidName(k)) + '</h1><div class="small">' + points(k) + ' pts · ' + L.money(points(k), perDollar()) + '</div></div></div></header>' +
+  const sw = L.KID_COLOURS.map((c) => '<button type="button" class="swatch' + (colourOf(k) === c ? ' on' : '') + '" style="background:' + c + '" data-act="colour" data-kid="' + k + '" data-colour="' + c + '" aria-label="' + h(L.colourName(c)) + '" title="' + h(L.colourName(c)) + '" aria-pressed="' + (colourOf(k) === c) + '"></button>').join('');
+  return '<div class="screen"><header class="band" style="' + kidVars(k) + '"><div class="row">' + backToPicker() + '<span class="avatar" style="width:64px;height:64px;border-radius:22px;font-size:30px;color:' + L.deepOf(colourOf(k)) + '">' + h(kidName(k)[0]) + '</span><div class="grow col"><h1 class="title-xl">' + h(kidName(k)) + '</h1><div class="small">' + points(k) + ' pts · ' + L.money(points(k), perDollar()) + '</div></div></div></header>' +
     '<div class="pad">' +
     '<div class="card" style="background:#172033;color:#fff;box-shadow:0 6px 0 #FACC15;border-radius:26px;padding:20px;gap:16px">' +
     '<div class="row" style="gap:14px">' + starIco(64) + '<div class="col" style="gap:0"><div class="eyebrow" style="color:#FACC15">Above &amp; Beyond · ' + sinceText() + '</div><div style="font-family:var(--display);font-weight:600;font-size:48px;line-height:1">' + mine.length + '</div><div class="small" style="color:#C9D1E3">times so far</div></div></div>' +
@@ -800,7 +802,7 @@ function viewKidMe(k) {
     (past.length ? '<div class="small" style="color:#C9D1E3">Past tallies: ' + past.map((t) => h(t.label) + ' — ' + t.n).join(' · ') + '</div>' : '<div class="small" style="color:#C9D1E3">Counted separately from points. Each tally\'s total stays in your profile.</div>') +
     '</div>' +
     penaltyKidCards(k) + weekCard + magicHistory(k) +
-    '<h2 style="font-size:22px;color:' + colourOf(k) + '">Recent moments</h2><div class="col" style="gap:10px">' + moments + '</div>' +
+    '<h2 style="font-size:22px;color:' + L.deepOf(colourOf(k)) + '">Recent moments</h2><div class="col" style="gap:10px">' + moments + '</div>' +
     '<h2 style="font-size:22px">My colour</h2><div class="swatches">' + sw + '</div>' +
     '<h2 style="font-size:22px">This week</h2><div class="col" style="gap:8px">' + week + '</div>' +
     (isKidUser() ? '<button type="button" class="btn ghost-red" data-act="signout">Sign out of this phone</button>' : '') +
@@ -914,7 +916,7 @@ function adminAB() {
   const nowMs = L.localMs(new Date());
   const kids = L.kidsForHouse(house, S.config).filter((k) => L.houseAt(k, nowMs, S.config) === house);
   const f = S.form.ab || (S.form.ab = { kids: [], what: '' });
-  const picks = kids.map((k) => '<button type="button" class="pick' + (f.kids.includes(k) ? ' on' : '') + '" style="--c:' + colourOf(k) + '" data-act="ab-kid" data-kid="' + k + '" aria-pressed="' + f.kids.includes(k) + '"><span class="avatar sm ' + (f.kids.includes(k) ? '' : 'solid') + '" style="' + (f.kids.includes(k) ? 'color:' + colourOf(k) : 'background:' + colourOf(k)) + '">' + h(kidName(k)[0]) + '</span>' + h(kidName(k)) + '</button>').join('') || '<div class="empty" style="grid-column:1/-1">No kids here right now.</div>';
+  const picks = kids.map((k) => '<button type="button" class="pick' + (f.kids.includes(k) ? ' on' : '') + '" style="--c:' + colourOf(k) + ';--c-ink:' + L.inkOn(colourOf(k)) + '" data-act="ab-kid" data-kid="' + k + '" aria-pressed="' + f.kids.includes(k) + '"><span class="avatar sm ' + (f.kids.includes(k) ? '' : 'solid') + '" style="' + (f.kids.includes(k) ? 'color:' + L.deepOf(colourOf(k)) : 'background:' + colourOf(k) + ';color:' + L.inkOn(colourOf(k))) + '">' + h(kidName(k)[0]) + '</span>' + h(kidName(k)) + '</button>').join('') || '<div class="empty" style="grid-column:1/-1">No kids here right now.</div>';
   const presets = (S.config.abPresets || []).map((p) => '<button type="button" class="chip' + (f.what === p ? ' on' : '') + '" data-act="ab-what" data-what="' + h(p) + '" aria-pressed="' + (f.what === p) + '">' + h(p) + '</button>').join('');
   const names = f.kids.map(kidName);
   const btnLabel = names.length === 0 ? 'Pick who first' : 'Give ' + (names.length === 1 ? names[0] : names.length + ' kids') + ' a star';
@@ -1158,7 +1160,10 @@ function adminBalances() {
   return adminScreen(adminTop('Balances', { colour: '#15803D', shadow: '#166534' }) + cards +
     '<form data-form="adjust" class="card"><h2 style="font-size:18px">Add or take away points</h2>' +
     '<div class="field"><label for="a-kid">Kid</label><select class="input" id="a-kid" name="kid">' + kids.map((k) => '<option value="' + k + '">' + h(kidName(k)) + '</option>').join('') + '</select></div>' +
-    '<div class="field"><label for="a-pts">Points (use minus to take away, e.g. -50)</label><input class="input" id="a-pts" name="pts" type="number" step="1" required></div>' +
+    '<div class="lbl">Add or take away?</div><div class="grid2 seg">' +
+    '<label class="seg-opt add"><input type="radio" name="dir" value="add" checked><span>' + ico('plus', 18, 2.6) + 'Add</span></label>' +
+    '<label class="seg-opt take"><input type="radio" name="dir" value="take"><span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14"/></svg>Take away</span></label></div>' +
+    '<div class="field"><label for="a-pts">How many points</label><input class="input" id="a-pts" name="pts" type="number" inputmode="numeric" min="1" step="1" required placeholder="e.g. 50"></div>' +
     '<div class="field"><label for="a-why">Reason</label><input class="input" id="a-why" name="reason" maxlength="80" required placeholder="e.g. Correction, birthday bonus"></div>' +
     '<button class="btn primary" type="submit">Save</button></form>' +
     (adj ? '<h2 style="font-size:18px">Recent changes</h2><div class="col" style="gap:8px">' + adj + '</div>' : ''));
@@ -1342,14 +1347,19 @@ const FORMS = {
     write([{ op: 'update', path: 'config/main', data: { [field]: list.concat([d]).sort() } }], 'Added');
   },
   adjust: (fd, form) => {
-    const kid = fd.get('kid'); const pts = Math.round(Number(fd.get('pts')));
+    const kid = fd.get('kid'); let pts = Math.abs(Math.round(Number(fd.get('pts')))) * (fd.get('dir') === 'take' ? -1 : 1);
+    if (pts < 0 && L.penaltyCfg(S.config).floor) {
+      const can = Math.max(0, points(kid));
+      if (can === 0) { toast(kidName(kid) + ' is already on 0 points', true); return; }
+      if (-pts > can) { pts = -can; S.adjMsg = 'Only ' + can + ' taken — points can\'t go below 0'; }
+    }
     if (!pts) { toast('Enter a number of points', true); return; }
     const id = rid('adj');
     touchAdmin();
     write([
       { op: 'set', path: 'adjustments/' + id, data: { kid, pts, reason: fd.get('reason').toString().trim(), by: S.admin.as, at: new Date() } },
       { op: 'update', path: 'balances/' + kid, data: { points: inc(pts), lastOp: 'adj_' + id } }
-    ], 'Points updated');
+    ], S.adjMsg || 'Points updated'); S.adjMsg = null;
     form.reset();
   },
   mypin: async (fd, form) => {

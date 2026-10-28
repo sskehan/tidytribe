@@ -8,7 +8,40 @@ export const GROUPS = [
   { id: 'evening', name: 'Evening', colour: '#4F46E5', light: '#E0E7FF' },
   { id: 'household', name: 'Household upkeep', colour: '#15803D', light: '#DCFCE7' }
 ];
-export const KID_COLOURS = ['#C2410C', '#1D4ED8', '#7C3AED', '#0F766E', '#BE185D', '#15803D', '#B45309', '#334155'];
+// Kid colours. Bold ones carry white text; light ones (light: true) carry dark text,
+// and use a deeper shade ("deep") wherever the colour is used as text on white.
+export const KID_COLOUR_LIST = [
+  { c: '#B91C1C', name: 'Red' },
+  { c: '#C2410C', name: 'Orange' },
+  { c: '#B45309', name: 'Amber' },
+  { c: '#BE185D', name: 'Raspberry' },
+  { c: '#DB2777', name: 'Hot pink' },
+  { c: '#7C3AED', name: 'Purple' },
+  { c: '#4338CA', name: 'Indigo' },
+  { c: '#1D4ED8', name: 'Blue' },
+  { c: '#0369A1', name: 'Ocean' },
+  { c: '#0E7490', name: 'Deep aqua' },
+  { c: '#0D9488', name: 'Teal' },
+  { c: '#0F766E', name: 'Dark teal' },
+  { c: '#15803D', name: 'Green' },
+  { c: '#4D7C0F', name: 'Lime' },
+  { c: '#334155', name: 'Slate' },
+  { c: '#67E8F9', name: 'Light aqua', light: true, deep: '#0E7490' },
+  { c: '#5EEAD4', name: 'Light teal', light: true, deep: '#0F766E' },
+  { c: '#A7F3D0', name: 'Mint', light: true, deep: '#047857' },
+  { c: '#93C5FD', name: 'Sky', light: true, deep: '#1D4ED8' },
+  { c: '#C4B5FD', name: 'Lavender', light: true, deep: '#6D28D9' },
+  { c: '#F9A8D4', name: 'Bubblegum', light: true, deep: '#BE185D' },
+  { c: '#FDBA74', name: 'Peach', light: true, deep: '#C2410C' },
+  { c: '#FDE68A', name: 'Butter', light: true, deep: '#A16207' }
+];
+export const KID_COLOURS = KID_COLOUR_LIST.map((x) => x.c);
+function colourInfo(c) { return KID_COLOUR_LIST.find((x) => x.c.toLowerCase() === String(c || '').toLowerCase()) || { c, name: c }; }
+export function colourName(c) { return colourInfo(c).name; }
+// Text colour to put ON the kid colour.
+export function inkOn(c) { return colourInfo(c).light ? '#172033' : '#FFFFFF'; }
+// The kid colour to use AS text on a white background.
+export function deepOf(c) { return colourInfo(c).deep || c; }
 const WD = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 const fmt = new Intl.DateTimeFormat('en-AU', {
   timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit',
