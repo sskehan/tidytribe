@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.06';
+const VERSION = '1.08';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -14,7 +14,7 @@ const h = L.esc;
 
 const S = {
   store: null, user: undefined, config: undefined,
-  chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [],
+  chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, magic: [], completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [],
   view: { screen: 'picker', tab: 'today' }, login: { who: null }, pin: null, admin: null, form: {},
   unsubs: [], subsKey: '', error: null, pendingRender: false
 };
@@ -131,6 +131,9 @@ function adultName(a) { return (S.config.adults && S.config.adults[a] && S.confi
 function colourOf(k) { return L.kidColour(k, S.config, S.prefs); }
 function deviceHouse() { return isAdultUser() ? L.adultHouse(S.user, S.config) : null; }
 function adminHouse() { return S.admin ? L.adultHouse(S.admin.as, S.config) : null; }
+function isOwner() { return !!S.admin && S.admin.as === ((S.config && S.config.owner) || 'shaun'); }
+// The house whose chores are being managed: your own, or (owner only) whichever house you picked.
+function choreHouse() { return (isOwner() && S.view.choreHouse && S.config.houses[S.view.choreHouse]) ? S.view.choreHouse : adminHouse(); }
 function perDollar() { return S.config.pointsPerDollar || 100; }
 function points(k) { return (S.balances[k] && S.balances[k].points) || 0; }
 function pendingFor(k) { return S.reqPending.filter((r) => r.kid === k && r.status === 'pending'); }
@@ -172,6 +175,158 @@ function todayInfo(k) {
   for (const ch of list) { const c = cm[L.completionId(k, key, ch.id)]; if (c) { done++; pts += c.pts || 0; } }
   return { now, key, list, cm, done, pts, total: list.length };
 }
+// ---------- Magic button ----------
+function magicOn(k) { return L.magicCfg(S.config).kids.includes(k); }
+function magicDates(k) { return new Set(S.magic.filter((c) => c.kid === k).map((c) => c.date)); }
+function hasChoresOn(k, key) { return L.choresFor(k, key, S.chores, S.config).length > 0; }
+function magicRun(k) {
+  const today = L.dateKey(new Date());
+  const tapped = magicDates(k);
+  return L.magicStreak(tapped, tapped.has(today) ? today : L.addDays(today, -1), (d) => hasChoresOn(k, d));
+}
+function magicCard(k, t) {
+  if (!magicOn(k) || !t.total) return '';
+  const m = L.magicCfg(S.config);
+  const cid = L.completionId(k, t.key, 'magic');
+  const tapped = !!t.cm[cid] || magicDates(k).has(t.key);
+  const run = magicRun(k);
+  const toStar = m.streakDays - (run % m.streakDays);
+  if (tapped) {
+    return '<div class="magic done"><span class="magic-ico">' + starIco(30, '#FACC15') + '</span><div class="grow col" style="gap:2px"><div style="font-family:var(--display);font-weight:600;font-size:20px">Magic done tonight!</div><div class="small">' + run + ' night' + (run === 1 ? '' : 's') + ' in a row · ' + (run % m.streakDays === 0 ? 'star earned!' : toStar + ' more for a star') + '</div></div></div>';
+  }
+  if (!L.inMagicWindow(t.now, m)) return '';
+  const left = t.total - t.done;
+  if (left > 0) {
+    return '<div class="magic waiting"><span class="magic-ico">' + starIco(30, '#94A3B8') + '</span><div class="grow col" style="gap:2px"><div style="font-family:var(--display);font-weight:600;font-size:20px">Magic button</div><div class="small">Finish ' + left + ' more chore' + (left === 1 ? '' : 's') + ' before ' + L.fmtTime(m.to) + ' to unlock +' + m.pts + '</div></div></div>';
+  }
+  return '<button type="button" class="magic ready" data-act="magic" data-kid="' + k + '"><span class="magic-ico">' + starIco(34, '#422006') + '</span><span class="grow col" style="gap:2px;text-align:left"><span style="font-family:var(--display);font-weight:600;font-size:22px">Tap the Magic button!</span><span class="small">All done today · +' + m.pts + ' points' + (run + 1 >= m.streakDays && (run + 1) % m.streakDays === 0 ? ' and a star!' : ' · night ' + (run + 1) + ' in a row') + '</span></span></button>';
+}
+function magicTap(k) {
+  const m = L.magicCfg(S.config);
+  const t = todayInfo(k);
+  const cid = L.completionId(k, t.key, 'magic');
+  if (t.cm[cid] || magicDates(k).has(t.key)) return;
+  if (!L.inMagicWindow(t.now, m)) { toast('The Magic button opens ' + L.fmtTime(m.from) + '–' + L.fmtTime(m.to), true); return; }
+  if (t.done < t.total) { toast('Finish all of today\'s chores first', true); return; }
+  const house = L.houseAt(k, L.localMs(t.now), S.config);
+  const run = magicRun(k) + 1;
+  const ops = [
+    { op: 'set', path: 'completions/' + cid, data: { kid: k, choreId: 'magic', choreName: 'Magic button', pts: m.pts, date: t.key, at: t.now, undoUntil: L.nextMidnight(t.now), by: S.user, house } },
+    { op: 'update', path: 'balances/' + k, data: { points: inc(m.pts), lastOp: cid } }
+  ];
+  const star = run % m.streakDays === 0;
+  if (star) {
+    ops.push({ op: 'set', path: 'stars/magic_' + k + '_' + t.key, data: { kid: k, what: m.streakDays + ' Magic nights in a row', note: '', by: 'magic', house, at: t.now, date: t.key, year: t.key.slice(0, 4), period: curPeriod().id } });
+  }
+  write(ops);
+  toast(star ? 'WOW! ' + m.streakDays + ' nights in a row — you earned a star!' : '+' + m.pts + ' Magic points! ' + run + ' night' + (run === 1 ? '' : 's') + ' in a row');
+}
+function magicHistory(k) {
+  if (!magicOn(k)) return '';
+  const m = L.magicCfg(S.config);
+  const today = L.dateKey(new Date());
+  const tapped = magicDates(k);
+  const run = magicRun(k);
+  let dots = '';
+  for (let i = 29; i >= 0; i--) {
+    const d = L.addDays(today, -i);
+    const cls = tapped.has(d) ? 'on' : !hasChoresOn(k, d) ? 'off' : i === 0 ? 'today' : '';
+    dots += '<i class="' + cls + '" title="' + L.fmtKey(d) + '"></i>';
+  }
+  const toStar = m.streakDays - (run % m.streakDays);
+  return '<div class="card" style="background:#1E2A5A;color:#fff;border-radius:26px;padding:18px;gap:12px;box-shadow:0 6px 0 #312E81">' +
+    '<div class="row" style="gap:12px">' + starIco(44, '#FACC15') + '<div class="col" style="gap:0"><div class="eyebrow" style="color:#C7D2FE">Magic nights in a row</div><div style="font-family:var(--display);font-weight:600;font-size:40px;line-height:1">' + run + '</div><div class="small" style="color:#C7D2FE">' + (run > 0 && run % m.streakDays === 0 ? 'Star earned! Next one in ' + m.streakDays + ' more nights' : toStar + ' more for an Above &amp; Beyond star') + '</div></div></div>' +
+    '<div class="mdots" role="img" aria-label="Magic button over the last 30 days">' + dots + '</div>' +
+    '<div class="small" style="color:#C7D2FE">Tick every chore, then tap the Magic button between ' + L.fmtTime(m.from) + ' and ' + L.fmtTime(m.to) + ' for +' + m.pts + '. Grey dots are days with no chores.</div></div>';
+}
+// ---------- weekly check (points off if too few chores done) ----------
+function penaltyOn(k) { const P = L.penaltyCfg(S.config); return P.on && P.kids.includes(k); }
+function doneIdsFor(k) { return new Set(S.completions.filter((c) => c.kid === k).map((c) => c.id)); }
+let penaltyBusy = false;
+// Runs on adult phones only (kids can't take their own points). Checks the last two finished custody
+// weeks; each kid/week is charged at most once (the record id is fixed and the rules make it create-only).
+async function applyPenalties() {
+  const P = L.penaltyCfg(S.config || {});
+  if (penaltyBusy || !P.on || !isAdultUser() || !S.config || !S.fresh || !S.fresh.completions || !S.fresh.chores || !S.fresh.balances || !navigator.onLine) return;
+  if (S.store.mode !== 'demo' && !P.since) return;
+  penaltyBusy = true;
+  try {
+    const now = new Date();
+    const todayKey = L.dateKey(now);
+    const since = P.since ? L.localMs(new Date(P.since)) : 0;
+    const cur = L.penaltyPeriod(L.localMs(now), S.config);
+    const visible = L.kidsForHouse(L.adultHouse(S.user, S.config), S.config);
+    for (const back of [2, 1]) {
+      const start = cur.start - back * L.WEEK;
+      const end = start + L.WEEK;
+      if (start < since) continue;                  // never charge the week the check was switched on
+      if (L.msKey(end) >= todayKey) continue;       // wait until the day after the week ends
+      for (const k of P.kids) {
+        if (!visible.includes(k) || !S.config.kids[k]) continue;
+        const id = 'penalty_' + k + '_' + L.msKey(start);
+        if (await S.store.exists('adjustments/' + id)) continue;
+        const r = L.periodChores(k, start, end, S.chores, S.config, doneIdsFor(k));
+        if (!r.due || r.done / r.due * 100 >= P.pct) continue;
+        const take = P.floor ? Math.min(P.pts, Math.max(0, points(k))) : P.pts;
+        const pct = Math.round(r.done / r.due * 100);
+        await S.store.batch([
+          { op: 'set', path: 'adjustments/' + id, data: { kid: k, pts: -take, reason: 'Only ' + pct + '% of chores done (' + r.done + ' of ' + r.due + '), week from ' + L.fmtKey(L.msKey(start)), by: 'auto', at: new Date(), period: L.msKey(start), auto: true } },
+          { op: 'update', path: 'balances/' + k, data: { points: inc(-take), lastOp: 'adj_' + id } }
+        ]);
+      }
+    }
+  } catch (e) { console.warn('weekly check', e); } finally { penaltyBusy = false; }
+}
+function penaltyKidCards(k) {
+  if (!penaltyOn(k)) return '';
+  const P = L.penaltyCfg(S.config);
+  let out = '';
+  const recent = S.adjustments.filter((a) => a.kid === k && a.auto && a.at && (Date.now() - a.at.getTime()) < 9 * 864e5);
+  for (const a of recent) out += '<div class="card" style="background:#FEE2E2;border:2px solid #FCA5A5"><div class="row" style="justify-content:space-between"><div style="font-weight:800;color:#991B1B">Points taken off</div><div style="font-family:var(--display);font-weight:600;font-size:22px;color:#B91C1C">' + a.pts + '</div></div><div class="small" style="color:#7F1D1D">' + h(a.reason) + '</div></div>';
+  const nowL = L.localMs(new Date());
+  const cur = L.penaltyPeriod(nowL, S.config);
+  const r = L.periodChores(k, cur.start, Math.min(cur.end, L.keyToLocalMs(L.addDays(L.dateKey(new Date()), 1), '00:00')), S.chores, S.config, doneIdsFor(k));
+  if (r.due) {
+    const pct = Math.round(r.done / r.due * 100);
+    const ok = pct >= P.pct;
+    out += '<div class="card" style="border:2px solid ' + (ok ? '#BBF7D0' : '#FDBA74') + ';background:' + (ok ? '#F0FDF4' : '#FFF7ED') + '"><div class="row" style="justify-content:space-between;align-items:baseline"><div class="lbl">Chores this custody week</div><div style="font-family:var(--display);font-weight:600;font-size:22px">' + pct + '%</div></div>' +
+      '<div class="bar grey" style="height:12px;position:relative"><i style="width:' + Math.min(100, pct) + '%;background:' + (ok ? '#16A34A' : '#EA580C') + '"></i></div>' +
+      '<div class="small" style="color:' + (ok ? '#166534' : '#9A3412') + ';font-weight:700">' + r.done + ' of ' + r.due + ' done so far. ' + (ok ? 'Great — stay above ' + P.pct + '% to keep all your points.' : 'Get above ' + P.pct + '% by ' + L.fmtLocalMs(cur.end) + ' or lose ' + P.pts + ' points.') + '</div></div>';
+  }
+  return out;
+}
+function penaltySettingsCard() {
+  const P = L.penaltyCfg(S.config);
+  const kids = L.kidsForHouse(adminHouse(), S.config);
+  return '<form data-form="penalty-settings" class="card" style="border:2px solid #FECACA"><h2 style="font-size:18px">Weekly check</h2>' +
+    '<p class="small muted" style="margin:0">At the end of each custody week (changeover to changeover), points come off any kid who did fewer than the set share of their chores.</p>' +
+    '<label class="check"><input type="checkbox" name="on"' + (P.on ? ' checked' : '') + '><span style="font-weight:800">Take points off when chores aren\'t done</span></label>' +
+    '<div class="grid2"><div class="field"><label for="pn-pct">If fewer than (%)</label><input class="input" id="pn-pct" name="pct" type="number" min="1" max="100" required value="' + P.pct + '"></div><div class="field"><label for="pn-pts">Points taken off</label><input class="input" id="pn-pts" name="pts" type="number" min="1" max="100000" required value="' + P.pts + '"></div></div>' +
+    '<label class="check"><input type="checkbox" name="floor"' + (P.floor ? ' checked' : '') + '><span style="font-weight:800">Never go below 0 points</span></label>' +
+    '<div class="lbl">Who it applies to</div><div class="chips">' + kids.map((k) => '<label class="check" style="padding:0 14px;border:2px solid ' + colourOf(k) + ';border-radius:999px"><input type="checkbox" name="kids" value="' + k + '"' + (P.kids.includes(k) ? ' checked' : '') + '><span style="font-weight:800">' + h(kidName(k)) + '</span></label>').join('') + '</div>' +
+    '<p class="small muted" style="margin:0">Checked the day after each week ends, by the first adult phone that opens the app. Take-off records show under Balances; add points back there if needed.</p>' +
+    '<button class="btn primary" type="submit">Save</button></form>';
+}
+// ---------- weekly maximum ----------
+function weeklyMax(k, house) {
+  const hs = house || L.houseAt(k, L.localMs(new Date()), S.config);
+  const e = L.expectedPoints(k, hs, S.chores, S.config, L.dateKey(new Date()), 28);
+  return Math.round(e.perWeek + (magicOn(k) && e.daysAt ? L.magicCfg(S.config).pts * 7 : 0));
+}
+function fairCard(house) {
+  const kids = L.kidsForHouse(house, S.config).filter((k) => S.config.kids[k].custody === 'shared');
+  if (kids.length < 2) return '';
+  const today = L.dateKey(new Date());
+  const rows = kids.map((k) => ({ k, e: L.expectedPoints(k, house, S.chores, S.config, today, 28) })).filter((r) => r.e.daysAt > 0);
+  if (rows.length < 2) return '';
+  const vals = rows.map((r) => ({ k: r.k, v: weeklyMax(r.k, house) }));
+  const diff = Math.max(...vals.map((x) => x.v)) - Math.min(...vals.map((x) => x.v));
+  const ok = diff === 0;
+  return '<div class="card" style="border:2px solid ' + (ok ? '#BBF7D0' : '#FDE68A') + ';background:' + (ok ? '#F0FDF4' : '#FFFBEB') + '">' +
+    '<div class="row" style="justify-content:space-between"><div class="lbl">Max points per week at ' + h(houseName(house)) + '</div><span class="count-pill" style="background:' + (ok ? '#16A34A' : '#B45309') + ';color:#fff">' + (ok ? 'Balanced ✓' : diff + ' apart') + '</span></div>' +
+    '<div class="row" style="gap:10px;flex-wrap:wrap">' + vals.map((x) => '<div class="row" style="gap:8px">' + solidAvatar(x.k, 'sm') + '<div style="font-family:var(--display);font-weight:600;font-size:24px">' + x.v + '</div></div>').join('') + '</div>' +
+    '<div class="small muted">If every chore is done. Shared chores (bins, dishwasher) count as half each. ' + (ok ? '' : 'Change chore points until these match.') + '</div></div>';
+}
 function nextChange(k, fromMs) {
   // Earliest moment after fromMs when the kid's house changes: pattern changeovers or override edges.
   const cfg = S.config;
@@ -203,13 +358,15 @@ function subscribe() {
   S.subsKey = sk;
   const onErr = (e) => { console.error(e); S.error = e && e.code === 'permission-denied' ? 'This account is not allowed to read the family data. Check the sign-in name and the security rules (SETUP.md step 6).' : 'Connection problem: ' + (e.message || e); render(); };
   const st = S.store;
-  S.unsubs.push(st.listen('config', { doc: 'main' }, (d) => { S.config = d; render(); if (d && !S.medsOn) { subscribeMeds(); setTimeout(autoBackup, 4000); } }, onErr));
-  S.unsubs.push(st.listen('chores', {}, (rows) => { S.chores = rows; render(); }, onErr));
+  S.unsubs.push(st.listen('config', { doc: 'main' }, (d) => { S.config = d; render(); if (d && !S.medsOn) { subscribeMeds(); setTimeout(autoBackup, 4000); setTimeout(applyPenalties, 6000); } if (d && isAdultUser() && (!d.magic || !d.owner || !d.penalty) && !S.migrated) { S.migrated = true; write([{ op: 'update', path: 'config/main', data: Object.assign(d.magic ? {} : { magic: L.MAGIC_DEFAULT }, d.owner ? {} : { owner: 'shaun' }, d.penalty ? {} : { penalty: Object.assign({}, L.PENALTY_DEFAULT, { since: Date.now() }) }) }]); } }, onErr));
+  S.unsubs.push(st.listen('chores', {}, (rows, pend, cached) => { S.chores = rows; if (!cached) S.fresh.chores = true; render(); }, onErr));
   S.unsubs.push(st.listen('rewards', {}, (rows) => { S.rewards = rows; render(); }, onErr));
-  S.unsubs.push(st.listen('balances', {}, (rows) => { S.balances = Object.fromEntries(rows.map((r) => [r.id, r])); render(); }, onErr));
+  S.unsubs.push(st.listen('balances', {}, (rows, pend, cached) => { S.balances = Object.fromEntries(rows.map((r) => [r.id, r])); if (!cached) S.fresh.balances = true; render(); }, onErr));
   S.unsubs.push(st.listen('prefs', {}, (rows) => { S.prefs = Object.fromEntries(rows.map((r) => [r.id, r])); render(); }, onErr));
   S.unsubs.push(st.listen('turns', {}, (rows) => { S.turns = Object.fromEntries(rows.map((r) => [r.id, r])); render(); }, onErr));
-  S.unsubs.push(st.listen('completions', { where: ['date', '>=', L.addDays(key, -7)] }, (rows) => { S.completions = rows; render(); }, onErr));
+  S.fresh = {};
+  S.unsubs.push(st.listen('completions', { where: ['date', '>=', L.addDays(key, -24)] }, (rows, pend, cached) => { S.completions = rows; if (!cached) S.fresh.completions = true; render(); }, onErr));
+  S.unsubs.push(st.listen('completions', { where: ['choreId', '==', 'magic'] }, (rows) => { S.magic = rows; render(); }, onErr));
   S.unsubs.push(st.listen('requests', { where: ['status', '==', 'pending'] }, (rows) => { S.reqPending = rows; render(); }, onErr));
   S.unsubs.push(st.listen('requests', { orderBy: ['createdAt', 'desc'], limit: 40 }, (rows) => { S.reqRecent = rows; render(); }, onErr));
   S.unsubs.push(st.listen('stars', { orderBy: ['at', 'desc'], limit: 3000 }, (rows) => { S.stars = rows; render(); }, onErr));
@@ -232,7 +389,7 @@ function subscribeMeds() {
 function unsubscribeAll() {
   S.unsubs.forEach((u) => { try { u(); } catch (e) { /* ignore */ } });
   S.unsubs = []; S.subsKey = ''; S.medsOn = false;
-  Object.assign(S, { config: undefined, chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [], error: null });
+  Object.assign(S, { config: undefined, chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, magic: [], completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [], error: null });
 }
 
 // ---------- actions ----------
@@ -299,7 +456,7 @@ function setColour(kid, colour) {
 }
 function runSetup() {
   const today = L.dateKey(new Date());
-  const ops = [{ op: 'set', path: 'config/main', data: Object.assign({}, SEED_CONFIG, { starPeriod: { id: 'p' + today.replace(/-/g, ''), start: today }, starHistory: [] }) }];
+  const ops = [{ op: 'set', path: 'config/main', data: Object.assign({}, SEED_CONFIG, { starPeriod: { id: 'p' + today.replace(/-/g, ''), start: today }, starHistory: [], penalty: Object.assign({}, SEED_CONFIG.penalty, { since: Date.now() }) }) }];
   for (const c of SEED_CHORES) { const { id, ...rest } = c; ops.push({ op: 'set', path: 'chores/' + id, data: rest }); }
   for (const r of SEED_REWARDS) { const { id, ...rest } = r; ops.push({ op: 'set', path: 'rewards/' + id, data: rest }); }
   for (const [k, b] of Object.entries(SEED_BALANCES)) ops.push({ op: 'set', path: 'balances/' + k, data: b });
@@ -517,6 +674,7 @@ function viewKidToday(k) {
   const t = todayInfo(k);
   if (S.config.kids[k].simple) return viewSimpleToday(k, t);
   let body = '';
+  body = magicCard(k, t);
   if (!t.total) {
     body = '<div class="empty">No chores for today at ' + h(houseName(L.houseAt(k, L.localMs(t.now), S.config))) + '. Enjoy!</div>';
   }
@@ -557,6 +715,7 @@ function choreRow(k, ch, t, g) {
 }
 function viewSimpleToday(k, t) {
   let body = '';
+  body = magicCard(k, t);
   if (!t.total) body = '<div class="empty">No jobs today!</div>';
   let i = 0;
   for (const p of L.PARTS) {
@@ -620,11 +779,16 @@ function viewKidMe(k) {
   const moments = mine.slice(0, 10).map((s) => '<div class="list-row" style="border:2px solid #FDE68A;box-shadow:0 3px 0 #FDE68A;border-radius:20px"><span class="group-ico" style="background:#FACC15;width:44px;height:44px;border-radius:14px">' + starIco(24, '#172033') + '</span><div class="grow col"><div style="font-weight:800;font-size:16px">' + h(s.what) + '</div>' + (s.note ? '<div class="small">' + h(s.note) + '</div>' : '') + '<div class="small muted">' + h(houseName(s.house)) + ' · ' + L.fmtKey(s.date) + ' · from ' + h(adultName(s.by)) + '</div></div></div>').join('') || '<div class="empty">No Above &amp; Beyond moments yet this time.</div>';
   // Points earned per day this week
   const today = L.dateKey(new Date());
+  const wk = L.weekStart(today);
+  const earned = S.completions.filter((c) => c.kid === k && c.date >= wk && c.date <= today).reduce((s2, c) => s2 + (c.pts || 0), 0);
+  const maxWk = weeklyMax(k);
+  const pctWk = maxWk ? Math.min(100, Math.round(earned / maxWk * 100)) : 0;
+  const weekCard = maxWk ? '<div class="card" style="border:2px solid #BFDBFE;box-shadow:0 4px 0 #BFDBFE"><div class="row" style="justify-content:space-between;align-items:baseline"><div class="lbl">This week (since Monday)</div><div style="font-family:var(--display);font-weight:600;font-size:24px">' + earned + ' <span class="small muted">of about ' + maxWk + '</span></div></div><div class="bar grey" style="height:14px"><i style="width:' + pctWk + '%;background:' + colourOf(k) + '"></i></div><div class="small muted">' + maxWk + ' is the most you can get in a week if you do every chore' + (magicOn(k) ? ' and tap the Magic button each night' : '') + '.</div></div>' : '';
   let week = '';
   for (let i = 0; i < 7; i++) {
     const d = L.addDays(today, -i);
     const pts = S.completions.filter((c) => c.kid === k && c.date === d).reduce((s, c) => s + (c.pts || 0), 0);
-    const n = S.completions.filter((c) => c.kid === k && c.date === d).length;
+    const n = S.completions.filter((c) => c.kid === k && c.date === d && c.choreId !== 'magic').length;
     week += '<div class="list-row"><div class="grow" style="font-weight:800">' + (i === 0 ? 'Today' : L.fmtKey(d)) + '</div><div class="small muted">' + n + ' chore' + (n === 1 ? '' : 's') + '</div><div style="font-weight:800;color:#9A3412;min-width:56px;text-align:right">+' + pts + '</div></div>';
   }
   const sw = L.KID_COLOURS.map((c) => '<button type="button" class="swatch' + (colourOf(k) === c ? ' on' : '') + '" style="background:' + c + '" data-act="colour" data-kid="' + k + '" data-colour="' + c + '" aria-label="Colour ' + c + '" aria-pressed="' + (colourOf(k) === c) + '"></button>').join('');
@@ -635,6 +799,7 @@ function viewKidMe(k) {
     '<div class="col" style="gap:6px"><div class="months" role="img" aria-label="Above and Beyond by month">' + bars + '</div><div class="mlabels" aria-hidden="true">' + labels + '</div></div>' +
     (past.length ? '<div class="small" style="color:#C9D1E3">Past tallies: ' + past.map((t) => h(t.label) + ' — ' + t.n).join(' · ') + '</div>' : '<div class="small" style="color:#C9D1E3">Counted separately from points. Each tally\'s total stays in your profile.</div>') +
     '</div>' +
+    penaltyKidCards(k) + weekCard + magicHistory(k) +
     '<h2 style="font-size:22px;color:' + colourOf(k) + '">Recent moments</h2><div class="col" style="gap:10px">' + moments + '</div>' +
     '<h2 style="font-size:22px">My colour</h2><div class="swatches">' + sw + '</div>' +
     '<h2 style="font-size:22px">This week</h2><div class="col" style="gap:8px">' + week + '</div>' +
@@ -815,14 +980,17 @@ function choreSummary(c) {
   return '<span class="pts-tile" style="background:' + g.colour + ';width:44px;height:44px;font-size:16px">' + c.pts + '</span><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + L.fmtTime(c.due) + ' · ' + h(g.name) + ' · ' + h(c.kids.map(kidName).join(', ')) + h(shareTxt) + (c.schoolOnly ? ' · school days' : '') + (c.schoolNext ? ' · night before school' : '') + (c.active === false ? ' · paused' : '') + '</div>' + (c.note ? '<div class="small" style="color:#334155">' + h(c.note) + '</div>' : '') + '</div>';
 }
 function adminChores() {
-  const house = adminHouse();
+  const house = choreHouse();
   const mine = S.chores.filter((c) => c.house === house);
   let body = choreRowsByTime(mine, (c) => '<button type="button" class="list-row btnlike" data-act="edit-chore" data-id="' + h(c.id) + '"' + (c.active === false ? ' style="opacity:.6"' : '') + '>' + choreSummary(c) + '</button>');
   if (!body) body = '<div class="empty">No chores at ' + h(houseName(house)) + ' yet. Add one, or copy chores from the other house.</div>';
   const otherHouses = Object.keys(S.config.houses).filter((x) => x !== house);
-  const views = otherHouses.map((x) => '<button type="button" class="btn full" style="border-color:#C7D2FE;color:#3730A3" data-act="other-house" data-house="' + h(x) + '">' + ico('house', 18, 2) + 'See ' + h(houseName(x)) + ' chores</button>').join('');
+  const views = isOwner()
+    ? '<div class="grid2">' + Object.keys(S.config.houses).map((x) => '<button type="button" class="btn' + (x === house ? ' dark' : '') + '" data-act="chore-house" data-house="' + h(x) + '" aria-pressed="' + (x === house) + '">' + ico('house', 18, 2) + h(houseName(x)) + '</button>').join('') + '</div><div class="small muted" style="margin-top:-8px">Owner: you can change chores at both houses.</div>'
+    : otherHouses.map((x) => '<button type="button" class="btn full" style="border-color:#C7D2FE;color:#3730A3" data-act="other-house" data-house="' + h(x) + '">' + ico('house', 18, 2) + 'See ' + h(houseName(x)) + ' chores</button>').join('');
   return adminScreen(adminTop('Chores', { eyebrow: houseName(house), colour: '#1D4ED8', shadow: '#1E3A8A' }) +
-    '<div class="grid2"><button type="button" class="btn primary" data-act="edit-chore" data-id="">' + ico('plus', 18, 2.4) + 'Add chore</button><button type="button" class="btn" data-act="admin" data-sub="copy">Copy from other house</button></div>' + views + body);
+    views + fairCard(house) +
+    '<div class="grid2"><button type="button" class="btn primary" data-act="edit-chore" data-id="">' + ico('plus', 18, 2.4) + 'Add chore</button><button type="button" class="btn" data-act="admin" data-sub="copy">Copy from other house</button></div>' + body);
 }
 function adminOther() {
   const house = adminHouse();
@@ -834,7 +1002,7 @@ function adminOther() {
     '<p class="small muted" style="margin:0">Only the adults at ' + h(houseName(other)) + ' can change these. To use one here, tap Copy from other house.</p>' + body);
 }
 function adminCopy() {
-  const house = adminHouse();
+  const house = choreHouse();
   const others = otherHouseChores(house).sort((a, b) => a.name.localeCompare(b.name));
   const rows = others.map((c) => '<div class="list-row"><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + h(houseName(c.house)) + ' · ' + L.fmtTime(c.due) + ' · ' + c.pts + ' pts · ' + h(c.kids.map(kidName).join(', ')) + '</div></div><button type="button" class="btn" style="min-height:44px" data-act="copy-chore" data-id="' + h(c.id) + '">Copy</button></div>').join('') || '<div class="empty">The other house has no chores yet.</div>';
   return adminScreen(adminTop('Copy a chore', { eyebrow: 'Into ' + houseName(house), colour: '#1D4ED8', shadow: '#1E3A8A', back: 'chores' }) + '<p class="small muted" style="margin:0">Copies go into ' + h(houseName(house)) + ' for kids who stay here. You can edit them after.</p><div class="col" style="gap:8px">' + rows + '</div>');
@@ -842,7 +1010,7 @@ function adminCopy() {
 function copyChore(id) {
   const src = S.chores.find((c) => c.id === id);
   if (!src) return;
-  const house = adminHouse();
+  const house = choreHouse();
   const allowed = L.kidsForHouse(house, S.config);
   const kids = src.kids.filter((k) => allowed.includes(k));
   if (!kids.length) { toast('None of those kids stay at this house.', true); return; }
@@ -854,9 +1022,9 @@ function copyChore(id) {
   write(ops, 'Copied: ' + src.name);
 }
 function adminChoreEdit() {
-  const house = adminHouse();
   const id = S.view.editId;
   const c = id ? S.chores.find((x) => x.id === id) : null;
+  const house = c ? c.house : choreHouse();
   if (id && !c) { S.view.sub = 'chores'; return adminChores(); }
   const v = c || { name: '', group: 'evening', due: '19:00', pts: 5, kids: [], days: [0, 1, 2, 3, 4, 5, 6], rotate: false, rotateOffset: 0, schoolOnly: false, schoolNext: false, active: true };
   const kids = L.kidsForHouse(house, S.config);
@@ -891,7 +1059,9 @@ function adminChoreEdit() {
     '</form>');
 }
 function submitChore(fd) {
-  const house = adminHouse();
+  const existing = fd.get('id') ? S.chores.find((x) => x.id === fd.get('id')) : null;
+  const house = existing ? existing.house : choreHouse();
+  if (existing && existing.house !== adminHouse() && !isOwner()) { toast('Only the adults at ' + houseName(existing.house) + ' can change this chore', true); return; }
   const id = fd.get('id') || (slug(fd.get('name')) + '-' + rid().slice(0, 4));
   const kids = fd.getAll('kids');
   const days = fd.getAll('days').map(Number).sort();
@@ -911,7 +1081,7 @@ function submitChore(fd) {
   }
   touchAdmin();
   write(ops, 'Chore saved');
-  S.view = { screen: 'admin', sub: 'chores' };
+  S.view = { screen: 'admin', sub: 'chores', choreHouse: S.view.choreHouse };
   render();
 }
 
@@ -1007,6 +1177,16 @@ function adminPeople() {
     '<p class="small muted" style="margin:0">Kids choose their own colour on their Me page.</p><button class="btn primary" type="submit">Save names</button></form>');
 }
 
+function magicSettingsCard() {
+  const m = L.magicCfg(S.config);
+  const kids = L.kidsForHouse(adminHouse(), S.config);
+  return '<form data-form="magic-settings" class="card" style="border:2px solid #C7D2FE"><h2 style="font-size:18px">Magic button</h2>' +
+    '<p class="small muted" style="margin:0">When every chore is ticked, kids tap it in the evening for bonus points. ' + m.streakDays + ' nights in a row earns an Above and Beyond star. Shared by both houses.</p>' +
+    '<div class="grid2"><div class="field"><label for="mg-from">Opens</label><input class="input" id="mg-from" name="from" type="time" required value="' + h(m.from) + '"></div><div class="field"><label for="mg-to">Closes</label><input class="input" id="mg-to" name="to" type="time" required value="' + h(m.to) + '"></div></div>' +
+    '<div class="grid2"><div class="field"><label for="mg-pts">Points each night</label><input class="input" id="mg-pts" name="pts" type="number" min="0" max="1000" required value="' + m.pts + '"></div><div class="field"><label for="mg-days">Nights in a row for a star</label><input class="input" id="mg-days" name="streakDays" type="number" min="1" max="365" required value="' + m.streakDays + '"></div></div>' +
+    '<div class="lbl">Who has it</div><div class="chips">' + kids.map((k) => '<label class="check" style="padding:0 14px;border:2px solid ' + colourOf(k) + ';border-radius:999px"><input type="checkbox" name="kids" value="' + k + '"' + (m.kids.includes(k) ? ' checked' : '') + '><span style="font-weight:800">' + h(kidName(k)) + '</span></label>').join('') + '</div>' +
+    '<button class="btn primary" type="submit">Save</button></form>';
+}
 function tallyCard() {
   const house = adminHouse();
   const kids = L.kidsForHouse(house, S.config);
@@ -1028,7 +1208,7 @@ function adminSettings() {
     '<div class="field"><label for="m-pd">Points per $1</label><input class="input" id="m-pd" name="perDollar" type="number" min="1" required value="' + (cfg.pointsPerDollar || 100) + '"><div class="small muted">Now: 1,000 points = ' + L.money(1000, cfg.pointsPerDollar || 100) + '</div></div>' +
     '<div class="field"><label for="m-lot">Cash out in lots of (points)</label><input class="input" id="m-lot" name="lot" type="number" min="1" required value="' + (cfg.cashOutLot || 1000) + '"></div>' +
     '<button class="btn primary" type="submit">Save</button></form>' +
-    tallyCard() +
+    magicSettingsCard() + penaltySettingsCard() + tallyCard() +
     '<div class="card"><h2 style="font-size:18px">Above and Beyond choices</h2><div class="chips">' + presets + '</div>' +
     '<form data-form="add-preset" class="row"><input class="input grow" name="p" maxlength="60" required aria-label="New choice" placeholder="Add a choice"><button class="btn" type="submit">Add</button></form></div>' +
     backupCard() +
@@ -1085,7 +1265,7 @@ const ACT = {
   'pin-adult': (d) => { const pins = S.config.pins || {}; S.pin = { adult: d.adult, entry: '', stage: pins[d.adult] ? 'enter' : 'create1', first: '', msg: '' }; render(); },
   'pin-cancel': () => { S.pin = null; S.view = isKidUser() ? { screen: 'kid', kid: S.user, tab: 'today' } : { screen: 'picker' }; render(); },
   lock: () => { S.admin = null; S.view = { screen: 'picker' }; render(); window.scrollTo(0, 0); },
-  admin: (d) => { touchAdmin(); S.view = { screen: 'admin', sub: d.sub }; render(); window.scrollTo(0, 0); if (d.sub === 'restore') loadSnaps(); },
+  admin: (d) => { touchAdmin(); S.view = { screen: 'admin', sub: d.sub, choreHouse: (d.sub === 'chores' || d.sub === 'copy') ? S.view.choreHouse : undefined }; render(); window.scrollTo(0, 0); if (d.sub === 'restore') loadSnaps(); },
   decide: (d) => decideRequest(d.id, d.ok === '1'),
   'ab-kid': (d) => { const f = S.form.ab; f.kids = f.kids.includes(d.kid) ? f.kids.filter((x) => x !== d.kid) : f.kids.concat([d.kid]); keepAbInputs(); render(); },
   'ab-what': (d) => { const f = S.form.ab; f.what = f.what === d.what ? '' : d.what; keepAbInputs(); render(); },
@@ -1095,8 +1275,10 @@ const ACT = {
     touchAdmin();
     write([{ op: 'delete', path: 'stars/' + s.id }, { op: 'update', path: 'balances/' + s.kid, data: { ['stars.' + starPeriodOf(s)]: inc(-1) } }], 'Star removed');
   },
-  'edit-chore': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'chore', editId: d.id || null }; render(); window.scrollTo(0, 0); },
-  'del-chore': (d) => { if (!confirm('Delete this chore? Points already earned stay.')) return; touchAdmin(); write([{ op: 'delete', path: 'chores/' + d.id }].concat(S.turns[d.id] ? [{ op: 'delete', path: 'turns/' + d.id }] : []), 'Chore deleted'); S.view = { screen: 'admin', sub: 'chores' }; render(); },
+  'edit-chore': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'chore', editId: d.id || null, choreHouse: S.view.choreHouse }; render(); window.scrollTo(0, 0); },
+  'chore-house': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'chores', choreHouse: d.house }; render(); },
+  magic: (d) => magicTap(d.kid),
+  'del-chore': (d) => { if (!confirm('Delete this chore? Points already earned stay.')) return; touchAdmin(); write([{ op: 'delete', path: 'chores/' + d.id }].concat(S.turns[d.id] ? [{ op: 'delete', path: 'turns/' + d.id }] : []), 'Chore deleted'); S.view = { screen: 'admin', sub: 'chores', choreHouse: S.view.choreHouse }; render(); },
   'copy-chore': (d) => copyChore(d.id),
   'other-house': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'other', otherHouse: d.house }; render(); window.scrollTo(0, 0); },
   'edit-reward': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'reward', editId: d.id || null }; render(); window.scrollTo(0, 0); },
@@ -1212,6 +1394,25 @@ const FORMS = {
     touchAdmin();
     write([{ op: 'set', path: 'meds/' + kid, data: { current: text, updatedAt: now, by: S.admin.as, house: adminHouse(), history } }], 'Saved for both houses');
   },
+  'penalty-settings': (fd) => {
+    const P = L.penaltyCfg(S.config);
+    const pct = Math.min(100, Math.max(1, Math.round(Number(fd.get('pct')) || 50)));
+    const pts = Math.max(1, Math.round(Number(fd.get('pts')) || 50));
+    const visible = L.kidsForHouse(adminHouse(), S.config);
+    const on = !!fd.get('on');
+    touchAdmin();
+    write([{ op: 'update', path: 'config/main', data: { penalty: { on, pct, pts, floor: !!fd.get('floor'), kids: P.kids.filter((k) => !visible.includes(k)).concat(fd.getAll('kids')), since: (on && !P.on) || !P.since ? Date.now() : P.since } } }], 'Weekly check saved');
+  },
+  'magic-settings': (fd) => {
+    const from = fd.get('from'); const to = fd.get('to');
+    if (!(to > from)) { toast('"Closes" must be after "Opens"', true); return; }
+    const pts = Math.max(0, Math.round(Number(fd.get('pts')) || 0));
+    const streakDays = Math.max(1, Math.round(Number(fd.get('streakDays')) || 30));
+    const visible = L.kidsForHouse(adminHouse(), S.config);
+    const others = L.magicCfg(S.config).kids.filter((k) => !visible.includes(k)); // keep kids this adult can't see
+    touchAdmin();
+    write([{ op: 'update', path: 'config/main', data: { magic: { from, to, pts, streakDays, kids: others.concat(fd.getAll('kids')) } } }], 'Magic button saved');
+  },
   'close-tally': (fd) => {
     const label = fd.get('label').toString().trim();
     if (!label) { toast('Give this tally a name', true); return; }
@@ -1266,6 +1467,7 @@ setInterval(() => {
   subscribe(); // re-subscribes after midnight so the new day's chores appear
   render();
   autoBackup();
+  applyPenalties();
 }, 60000);
 
 // ---------- start ----------

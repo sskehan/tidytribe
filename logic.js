@@ -185,3 +185,96 @@ export function kidColour(kidId, config, prefs) {
 export function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+// ---------- fairness: how many points a kid can earn if they do everything ----------
+// Looks at the next `days` days. Shared chores ('daily' swap or 'turns') count as an equal share
+// between the kids at that house, since over time they come out even. Chores marked fairness:true
+// (the top-up) are left out unless includeTopUp is set.
+export function expectedPoints(kidId, house, chores, config, startKey, days, includeTopUp) {
+  const n = days || 28;
+  let total = 0;
+  let daysAt = 0;
+  for (let i = 0; i < n; i++) {
+    const key = addDays(startKey, i);
+    if (houseAt(kidId, keyToLocalMs(key, '12:00'), config) === house) daysAt++;
+    const dow = keyDow(key);
+    for (const ch of chores) {
+      if (ch.house !== house || !ch.active || !ch.kids || !ch.kids.includes(kidId)) continue;
+      if (ch.fairness && !includeTopUp) continue;
+      if (!(ch.days || []).includes(dow)) continue;
+      if (ch.schoolOnly && !isSchoolDay(key, config)) continue;
+      if (ch.schoolNext && !isSchoolDay(addDays(key, 1), config)) continue;
+      const t = keyToLocalMs(key, ch.due);
+      if (houseAt(kidId, t, config) !== house) continue;
+      let share = 1;
+      if (shareMode(ch) !== 'each') {
+        const present = ch.kids.filter((k) => houseAt(k, t, config) === house).length;
+        share = present > 1 ? 1 / present : 1;
+      }
+      total += ch.pts * share;
+    }
+  }
+  const perDay = daysAt ? total / daysAt : 0;
+  return { total, daysAt, perDay, perWeek: perDay * 7 };
+}
+
+// ---------- Magic button ----------
+// Between `from` and `to` each night, a kid who has ticked every chore that day can tap the
+// Magic button for bonus points. `streakDays` nights in a row earns an Above and Beyond star.
+// Days with no chores at all neither count nor break the run.
+export const MAGIC_DEFAULT = { pts: 10, from: '20:00', to: '22:00', streakDays: 30, kids: ['alex', 'emma'] };
+export function magicCfg(config) { return Object.assign({}, MAGIC_DEFAULT, (config && config.magic) || {}); }
+export function inMagicWindow(date, m) {
+  const p = parts(date);
+  const hm = pad(p.h) + ':' + pad(p.mi);
+  return hm >= m.from && hm < m.to;
+}
+// Nights in a row, counting back from endKey. tapped: Set of date keys; hasChores(dateKey) -> boolean.
+export function magicStreak(tapped, endKey, hasChores) {
+  let n = 0;
+  for (let i = 0; i < 800; i++) {
+    const d = addDays(endKey, -i);
+    if (tapped.has(d)) { n++; continue; }
+    if (!hasChores(d)) continue;
+    break;
+  }
+  return n;
+}
+export function weekStart(key) { return addDays(key, -((keyDow(key) + 6) % 7)); } // Monday
+
+// ---------- Weekly check: points off if too few chores were done ----------
+export const PENALTY_DEFAULT = { on: true, pct: 50, pts: 50, floor: true, kids: ['alex', 'emma'] };
+export function penaltyCfg(config) { return Object.assign({}, PENALTY_DEFAULT, (config && config.penalty) || {}); }
+export function msKey(ms) {
+  const t = new Date(ms);
+  return t.getUTCFullYear() + '-' + pad(t.getUTCMonth() + 1) + '-' + pad(t.getUTCDate());
+}
+// The custody week (changeover to changeover) containing local time t.
+export function penaltyPeriod(t, config) {
+  const a = parseLocal(config.custody.anchor);
+  const n = Math.floor((t - a) / WEEK);
+  return { start: a + n * WEEK, end: a + (n + 1) * WEEK };
+}
+// Chores due for a kid between local times start and end, and how many were ticked.
+// Take-turns chores only count when this kid did them (past turns aren't known).
+export function periodChores(kidId, start, end, chores, config, doneIds) {
+  let due = 0;
+  let done = 0;
+  const fixed = chores.filter((c) => shareMode(c) !== 'turns');
+  const turnsCh = chores.filter((c) => shareMode(c) === 'turns' && c.active && c.kids && c.kids.includes(kidId));
+  const last = msKey(end - 1);
+  for (let d = msKey(start); d <= last; d = addDays(d, 1)) {
+    for (const ch of choresFor(kidId, d, fixed, config)) {
+      const t = keyToLocalMs(d, ch.due);
+      if (t < start || t >= end) continue;
+      due++;
+      if (doneIds.has(completionId(kidId, d, ch.id))) done++;
+    }
+    for (const ch of turnsCh) {
+      const t = keyToLocalMs(d, ch.due);
+      if (t < start || t >= end) continue;
+      if (doneIds.has(completionId(kidId, d, ch.id))) { due++; done++; }
+    }
+  }
+  return { due, done };
+}

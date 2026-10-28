@@ -181,3 +181,16 @@ form:not(:has(#c-share option[value="daily"]:checked)) .only-daily { display: no
 .tile { padding-top: 40px; }
 .note-line { display: flex; gap: 6px; align-items: flex-start; font-size: 13px; font-weight: 700; color: #831843; background: #FCE7F3; border-radius: 8px; padding: 4px 8px; white-space: pre-line; overflow-wrap: anywhere; }
 .note-line.plain { color: #334155; background: #F1F5F9; }
+.magic { display: flex; align-items: center; gap: 14px; border-radius: 24px; padding: 16px; border: none; width: 100%; text-align: left; font: inherit; }
+.magic .magic-ico { width: 56px; height: 56px; border-radius: 18px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: rgba(255,255,255,.15); }
+.magic.ready { background: linear-gradient(135deg, #FDE047, #F59E0B); color: #422006; box-shadow: 0 6px 0 #B45309; cursor: pointer; animation: magicPulse 1.6s ease-in-out infinite; }
+.magic.ready .magic-ico { background: rgba(255,255,255,.55); }
+.magic.done { background: #1E2A5A; color: #fff; }
+.magic.waiting { background: #E2E8F0; color: #334155; }
+@keyframes magicPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
+@media (prefers-reduced-motion: reduce) { .magic.ready { animation: none; } }
+.mdots { display: grid; grid-template-columns: repeat(15, minmax(0, 1fr)); gap: 5px; }
+.mdots i { display: block; aspect-ratio: 1; border-radius: 999px; border: 2px solid #475BA0; }
+.mdots i.on { background: #FACC15; border-color: #FACC15; }
+.mdots i.off { background: #475569; border-color: #475569; transform: scale(.6); }
+.mdots i.today { border-color: #FACC15; border-style: dashed; }

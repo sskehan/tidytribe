@@ -42,6 +42,9 @@ export const SEED_CONFIG = {
   ],
   pupilFreeDays: [],
   abPresets: ['Offering to help', 'Helped without being asked', 'Helping a brother or sister', 'Being kind to someone', 'Extra effort at school'],
+  magic: { pts: 10, from: '20:00', to: '22:00', streakDays: 30, kids: ['alex', 'emma'] },
+  owner: 'shaun',
+  penalty: { on: true, pct: 50, pts: 50, floor: true, kids: ['alex', 'emma'] },
   pins: {}
 };
 

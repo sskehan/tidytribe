@@ -4,7 +4,7 @@ rules_version = '2';
 // Adults (shaun, lyndsey, heidi) can change everything.
 // Kids (alex, emma) can only: tick/untick their own chores (points must match the chore),
 // request rewards or cash outs for themselves, cancel their own pending requests,
-// pass on a take-turns chore by doing it, and choose their own colour. They can never change points directly.
+// pass on a take-turns chore by doing it, tap the nightly Magic button, and choose their own colour. They can never change points directly.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -42,13 +42,24 @@ service cloud.firestore {
       allow read: if isMember();
       allow write: if isAdult();
     }
+    // Kids can add only their own Magic-button star, on a night they tapped the Magic button.
+    function kidMagicStarOk(sid) {
+      let d = request.resource.data;
+      return d.kid == me() && d.by == 'magic'
+        && sid == 'magic_' + me() + '_' + d.date
+        && existsAfter(docPath('completions', me() + '_' + d.date + '_magic'));
+    }
     match /stars/{id} {
       allow read: if isMember();
-      allow write: if isAdult();
+      allow create: if isAdult() || (isKid() && kidMagicStarOk(id));
+      allow update, delete: if isAdult();
     }
+    // Points added or taken off by an adult. Automatic weekly penalties (penalty_...) can only be
+    // created once and never changed, so a week can't be charged twice.
     match /adjustments/{id} {
       allow read: if isMember();
-      allow write: if isAdult();
+      allow create: if isAdult();
+      allow update, delete: if isAdult() && !id.matches('^penalty_.*');
     }
 
     // Take-turns chores (bins): whose turn it is. A kid can pass the turn on only by doing
@@ -111,15 +122,25 @@ service cloud.firestore {
       allow update: if isAdult() || (isKid() && kid == me() && kidBalanceOk(kid));
     }
 
+    // A normal chore tick: points must match the chore, and take-turns chores only for whoever's turn it is.
+    function choreOk(d) {
+      return d.choreId != 'magic'
+        && d.pts == get(docPath('chores', d.choreId)).data.pts
+        && (get(docPath('chores', d.choreId)).data.rotate != 'turns'
+          || get(docPath('turns', d.choreId)).data.kid == me());
+    }
+    // The nightly Magic button: points must match the Magic button setting.
+    function magicOk(d) {
+      let m = get(docPath('config', 'main')).data;
+      return d.choreId == 'magic' && ('magic' in m) && d.pts == m.magic.pts;
+    }
     // Chore ticks. Document id is <kid>_<YYYY-MM-DD>_<choreId>, so a chore can only be ticked once a day.
     function kidCreateOk(cid) {
       let d = request.resource.data;
       let b = docPath('balances', me());
       return d.kid == me()
         && cid.matches('^' + me() + '_[0-9]{4}-[0-9]{2}-[0-9]{2}_.+$')
-        && d.pts == get(docPath('chores', d.choreId)).data.pts
-        && (get(docPath('chores', d.choreId)).data.rotate != 'turns'
-          || get(docPath('turns', d.choreId)).data.kid == me())
+        && (magicOk(d) || choreOk(d))
         && d.at is timestamp
         && d.at <= request.time + duration.value(5, 'm')
         && d.at > request.time - duration.value(36, 'h')

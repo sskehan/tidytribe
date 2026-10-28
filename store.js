@@ -73,7 +73,7 @@ async function firebaseStore(cfg) {
       return fsM.onSnapshot(buildQuery(name, spec || {}), (s) => {
         const out = [];
         s.forEach((d) => out.push(Object.assign({ id: d.id }, conv(d.data()))));
-        cb(out, s.metadata.hasPendingWrites);
+        cb(out, s.metadata.hasPendingWrites, s.metadata.fromCache);
       }, (e) => onErr && onErr(e));
     },
     async batch(ops) {
@@ -85,6 +85,11 @@ async function firebaseStore(cfg) {
       }
       // Resolves when the server confirms. Offline, the change is already shown and will sync later.
       return b.commit();
+    },
+    async exists(path) {
+      // Asks the server (not the offline copy), so a missing document really is missing.
+      const s = await fsM.getDocFromServer(ref(path));
+      return s.exists();
     },
     async dumpAll() {
       const out = {};
@@ -159,7 +164,7 @@ function demoStore() {
       });
     }
     if (s.limit) rows = rows.slice(0, s.limit);
-    l.cb(rows, false);
+    l.cb(rows, false, false);
   }
   function setPath(obj, path, val) {
     const keys = path.split('.');
@@ -205,6 +210,7 @@ function demoStore() {
       save();
       listeners.forEach(run);
     },
+    async exists(path) { const [col, id] = path.split('/'); return !!data[col][id]; },
     async dumpAll() { return clone(data); },
     resetDemo() { for (const n of COLLECTIONS) data[n] = {}; save(); listeners.forEach(run); }
   };
