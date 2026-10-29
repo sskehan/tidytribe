@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.14';
+const VERSION = '1.15';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -160,6 +160,25 @@ function choreCtx(key) {
   const turns = {};
   for (const [id, t] of Object.entries(S.turns)) turns[id] = t.kid;
   return { turns, doneBy };
+}
+// Chore pictures (used on picture tiles, e.g. Brooke's). Built-in ones by chore id; an adult can set or remove one in the chore editor.
+const DEFAULT_PICS = { clothes: 'pic-clothes.jpg', washup: 'pic-washup.jpg', gummies: 'pic-gummies.jpg' };
+function picOf(ch) { if (!ch || ch.pic === 'none') return null; return ch.pic || DEFAULT_PICS[ch.id] || null; }
+// Shrinks a photo to a small square JPEG (about 30 KB) so it can be saved with the chore.
+function shrinkPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const size = 320; const side = Math.min(img.width, img.height);
+      const cv = document.createElement('canvas'); cv.width = size; cv.height = size;
+      cv.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+      URL.revokeObjectURL(url);
+      resolve(cv.toDataURL('image/jpeg', 0.8));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Couldn\'t open that picture')); };
+    img.src = url;
+  });
 }
 function groupOf(ch) { return L.GROUPS.find((g) => g.id === ch.group) || L.GROUPS[0]; }
 function shareText(ch, k) {
@@ -764,7 +783,7 @@ function viewSimpleToday(k, t) {
     body += partHead(p, items, k, t, 24) + '<div class="tiles">';
     for (const ch of items) {
       const done = !!t.cm[L.completionId(k, t.key, ch.id)];
-      body += '<button type="button" class="tile' + (done ? ' done' : '') + '" style="background:' + TILE_COLOURS[i++ % TILE_COLOURS.length] + '" data-act="tick" data-kid="' + k + '" data-chore="' + h(ch.id) + '" aria-pressed="' + done + '" aria-label="' + h(ch.name) + ', ' + ch.pts + ' points' + (done ? ', done' : '') + '">' + '<span class="pts">' + coinIco(18) + '+' + ch.pts + '</span>' + ico(choreIcon(ch.name), 52, 1.8) + '<span>' + h(ch.name) + '</span>' + (done ? '<span class="badge">' + ico('check', 22, 3.2) + '</span>' : '') + '</button>';
+      body += '<button type="button" class="tile' + (done ? ' done' : '') + '" style="background:' + TILE_COLOURS[i++ % TILE_COLOURS.length] + '" data-act="tick" data-kid="' + k + '" data-chore="' + h(ch.id) + '" aria-pressed="' + done + '" aria-label="' + h(ch.name) + ', ' + ch.pts + ' points' + (done ? ', done' : '') + '">' + '<span class="pts">' + coinIco(18) + '+' + ch.pts + '</span>' + (picOf(ch) ? '<img class="tile-pic" src="' + h(picOf(ch)) + '" alt="">' : ico(choreIcon(ch.name), 52, 1.8)) + '<span>' + h(ch.name) + '</span>' + (done ? '<span class="badge">' + ico('check', 22, 3.2) + '</span>' : '') + '</button>';
     }
     body += '</div></section>';
   }
@@ -1085,6 +1104,7 @@ function adminChoreEdit() {
     '<div class="field"><label for="c-due">Due by</label><input class="input" id="c-due" name="due" type="time" required value="' + h(v.due) + '"></div></div>' +
     '<div class="field"><label for="c-pts">Points</label><input class="input" id="c-pts" name="pts" type="number" min="0" max="1000" step="1" required value="' + v.pts + '"><div class="small muted">' + perDollar() + ' points = $1</div></div>' +
     '<div class="field"><label for="c-note">Note (optional)</label><textarea class="input" id="c-note" name="note" maxlength="200" rows="2" placeholder="e.g. Take with breakfast">' + h(v.note || '') + '</textarea></div></div>' +
+    (function () { const cur = S.picDraft && S.picDraft.id === (id || '') ? S.picDraft.pic : picOf(v); return '<div class="field"><label>Picture <span class="muted small">(shows on picture tiles, like Brooke\'s)</span></label><div class="row" style="gap:12px">' + (cur ? '<img class="pic-preview" src="' + h(cur) + '" alt="Chore picture">' : '<span class="pic-preview none">' + ico(choreIcon(v.name || ''), 34, 1.8) + '</span>') + '<div class="col" style="gap:8px"><label class="btn dark" style="cursor:pointer">' + ico('plus', 18, 2.4) + (cur ? 'Change picture' : 'Add picture') + '<input type="file" id="chore-pic" accept="image/*" hidden></label>' + (cur ? '<button type="button" class="btn ghost-red" data-act="pic-remove">Remove picture</button>' : '') + '</div></div></div>'; })() +
     '<div class="card"><div class="lbl">Who does it</div><div class="chips">' + kids.map((k) => '<label class="check" style="min-height:44px;padding:0 14px;border-radius:999px;border:2px solid ' + colourOf(k) + '"><input type="checkbox" name="kids" value="' + k + '"' + (v.kids.includes(k) ? ' checked' : '') + ' style="accent-color:' + colourOf(k) + '"><span style="font-weight:800">' + h(kidName(k)) + '</span></label>').join('') + '</div>' +
     '<div class="field"><label for="c-share">If more than one kid is ticked</label><select class="input" id="c-share" name="rotate">' +
     '<option value=""' + (mode === 'each' ? ' selected' : '') + '>Each kid does their own</option>' +
@@ -1117,6 +1137,12 @@ function submitChore(fd) {
   const share = kids.length > 1 ? (fd.get('rotate') || '') : '';
   if (share === 'daily' && !kids.includes(fd.get('todayKid'))) { toast('Pick who does it today from the kids ticked', true); return; }
   const data = { name, group: fd.get('group'), due: fd.get('due'), pts, kids, house, days, rotate: share || false, rotateOffset: share === 'daily' ? L.offsetFor(kids, fd.get('todayKid'), L.dateKey(new Date())) : 0, schoolOnly: !!fd.get('schoolOnly'), schoolNext: !!fd.get('schoolNext'), optional: !!fd.get('optional'), active: !!fd.get('active'), note: (fd.get('note') || '').toString().trim() };
+  // Picture: a new one or a removal from this edit; otherwise keep what the chore had.
+  const draft = S.picDraft && S.picDraft.id === (fd.get('id') || '') ? S.picDraft : null;
+  if (draft) data.pic = draft.pic ? draft.pic : (DEFAULT_PICS[id] ? 'none' : '');
+  else if (existing && existing.pic) data.pic = existing.pic;
+  if (!data.pic) delete data.pic;
+  S.picDraft = null;
   const ops = [{ op: 'set', path: 'chores/' + id, data }];
   if (share === 'turns') {
     const cur = S.turns[id] && S.turns[id].kid;
@@ -1326,7 +1352,8 @@ const ACT = {
     touchAdmin();
     write([{ op: 'delete', path: 'stars/' + s.id }, { op: 'update', path: 'balances/' + s.kid, data: { ['stars.' + starPeriodOf(s)]: inc(-1) } }], 'Star removed');
   },
-  'edit-chore': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'chore', editId: d.id || null, choreHouse: S.view.choreHouse }; render(); window.scrollTo(0, 0); },
+  'pic-remove': () => { S.picDraft = { id: S.view.editId || '', pic: null }; render(); },
+  'edit-chore': (d) => { touchAdmin(); S.picDraft = null; S.view = { screen: 'admin', sub: 'chore', editId: d.id || null, choreHouse: S.view.choreHouse }; render(); window.scrollTo(0, 0); },
   'chore-house': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'chores', choreHouse: d.house }; render(); },
   magic: (d) => magicTap(d.kid),
   'del-chore': (d) => { if (!confirm('Delete this chore? Points already earned stay.')) return; touchAdmin(); write([{ op: 'delete', path: 'chores/' + d.id }].concat(S.turns[d.id] ? [{ op: 'delete', path: 'turns/' + d.id }] : []), 'Chore deleted'); S.view = { screen: 'admin', sub: 'chores', choreHouse: S.view.choreHouse }; render(); },
@@ -1509,6 +1536,10 @@ app.addEventListener('submit', (e) => {
 });
 app.addEventListener('change', async (e) => {
   if (e.target.id === 'dbx-wifi') { B.setMeta({ wifiOnly: e.target.checked }); return; }
+  if (e.target.id === 'chore-pic' && e.target.files && e.target.files[0]) {
+    try { S.picDraft = { id: S.view.editId || '', pic: await shrinkPhoto(e.target.files[0]) }; render(); toast('Picture ready — tap Save chore'); } catch (err) { toast(err.message || String(err), true); }
+    return;
+  }
   if (e.target.id === 'restore-file' && e.target.files && e.target.files[0]) {
     const file = e.target.files[0];
     e.target.value = '';

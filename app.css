@@ -207,3 +207,6 @@ form:not(:has(#c-share option[value="daily"]:checked)) .only-daily { display: no
 .band .icon-btn { color: inherit; background: var(--kid-btn, rgba(255,255,255,.2)); }
 .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 10px; }
 .swatch-name { font-weight: 800; }
+.tile-pic { width: 100%; max-width: 132px; aspect-ratio: 1; object-fit: cover; border-radius: 24%; display: block; box-shadow: 0 4px 0 rgba(0,0,0,.15); }
+.pic-preview { width: 84px; height: 84px; border-radius: 22px; object-fit: cover; flex-shrink: 0; }
+.pic-preview.none { background: #E2E6EF; color: #64748B; display: flex; align-items: center; justify-content: center; }
