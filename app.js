@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.16';
+const VERSION = '1.17';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma', 'brooke'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma'], ['brooke', 'Brooke']];
@@ -538,7 +538,14 @@ async function restoreData(data, whenText) {
       for (const id of Object.keys(have)) if (!(id in want)) ops.push({ op: 'delete', path: col + '/' + id });
       for (const [id, doc] of Object.entries(want)) ops.push({ op: 'set', path: col + '/' + id, data: doc });
     }
-    for (let i = 0; i < ops.length; i += 400) await S.store.batch(ops.slice(i, i + 400));
+    // Write in chunks: at most 400 changes or about 4 MB at a time (chore pictures make some changes large).
+    let chunk = []; let size = 0;
+    for (const op of ops) {
+      const n = op.data ? JSON.stringify(op.data).length : 100;
+      if (chunk.length && (chunk.length >= 400 || size + n > 4000000)) { await S.store.batch(chunk); chunk = []; size = 0; }
+      chunk.push(op); size += n;
+    }
+    if (chunk.length) await S.store.batch(chunk);
     toast('Restored ✓');
     S.view = { screen: 'admin', sub: 'settings' };
     render();
