@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.13';
+const VERSION = '1.14';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
@@ -592,6 +592,36 @@ function avatar(k, cls) {
 function solidAvatar(k, cls) {
   return '<span class="avatar solid ' + (cls || '') + '" style="background:' + colourOf(k) + ';color:' + L.inkOn(colourOf(k)) + '">' + h(kidName(k)[0]) + '</span>';
 }
+// One day's chores for a kid: what was ticked (and when), what wasn't.
+// "Not done" is worked out from the chores as they're set up now.
+function viewKidDay(k, d) {
+  const today = L.dateKey(new Date());
+  if (!d) d = today;
+  const isToday = d === today;
+  const ticks = S.completions.filter((c) => c.kid === k && c.date === d).sort((a, b) => (a.at ? a.at.getTime() : 0) - (b.at ? b.at.getTime() : 0));
+  const doneIds = new Set(ticks.map((c) => c.choreId));
+  const pts = ticks.reduce((s2, c) => s2 + (c.pts || 0), 0);
+  const fixed = S.chores.filter((c) => L.shareMode(c) !== 'turns');
+  const due = L.choresFor(k, d, fixed, S.config);
+  const missed = due.filter((c) => !c.optional && !doneIds.has(c.id));
+  const optMissed = due.filter((c) => c.optional && !doneIds.has(c.id));
+  const doneRows = ticks.map((c) => {
+    const ch = S.chores.find((x) => x.id === c.choreId);
+    const magic = c.choreId === 'magic';
+    const late = !magic && ch && c.at && L.isLate(ch, c.at, d);
+    return '<div class="list-row"><span class="pts-tile" style="background:' + (magic ? '#422006' : 'var(--green)') + ';width:40px;height:40px;font-size:14px">' + (magic ? starIco(20, '#FACC15') : ico('check', 20, 3)) + '</span><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(magic ? 'Magic button' : (c.choreName || (ch && ch.name) || 'Chore')) + '</div><div class="small muted">' + (c.at ? 'Ticked ' + L.fmtClock(c.at) : '') + (ch && !magic ? ' · due ' + L.fmtTime(ch.due) : '') + (late ? ' <span class="tag late">Late</span>' : '') + (c.house && c.house !== L.houseAt(k, L.keyToLocalMs(d, '12:00'), S.config) ? ' · ' + h(houseName(c.house)) : '') + '</div></div><div style="font-weight:800;color:#15803D">+' + (c.pts || 0) + '</div></div>';
+  }).join('');
+  const missRow = (c, opt) => '<div class="list-row" style="' + (opt ? 'opacity:.7' : '') + '"><span class="pts-tile" style="background:' + (opt ? '#94A3B8' : '#B91C1C') + ';width:40px;height:40px;font-size:14px">' + (opt ? '–' : '✕') + '</span><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">Due ' + L.fmtTime(c.due) + (opt ? ' · <span class="tag opt">Optional</span>' : '') + '</div></div><div class="small muted" style="font-weight:800;white-space:nowrap">' + c.pts + ' pts</div></div>';
+  const here = L.houseAt(k, L.keyToLocalMs(d, '12:00'), S.config);
+  return '<div class="screen"><header class="band" style="' + kidVars(k) + '"><div class="row"><button type="button" class="icon-btn" data-act="tab" data-tab="me" aria-label="Back">' + ico('back', 20, 2.2) + '</button><div class="grow col" style="gap:0"><div class="small" style="font-weight:800">' + h(kidName(k)) + ' · ' + h(houseName(here)) + '</div><h1 class="title-xl" style="font-size:28px">' + (isToday ? 'Today' : h(L.fmtKey(d))) + '</h1></div></div>' +
+    '<div class="grid2"><div class="stat"><div class="lbl">' + ico('check', 16, 2.6) + 'Done</div><div class="num">' + ticks.filter((c) => c.choreId !== 'magic').length + '</div><div class="sub">+' + pts + ' pts</div></div><div class="stat dark"><div class="lbl">' + ico('clock', 16, 2.2) + (isToday ? 'Still to do' : 'Not done') + '</div><div class="num">' + missed.length + '</div><div class="sub">' + (optMissed.length ? '+ ' + optMissed.length + ' optional' : '&nbsp;') + '</div></div></div></header>' +
+    '<div class="pad">' +
+    '<h2 style="font-size:20px;color:#15803D">Done</h2><div class="col" style="gap:8px">' + (doneRows || '<div class="empty">Nothing ticked this day.</div>') + '</div>' +
+    (missed.length ? '<h2 style="font-size:20px;color:#B91C1C">' + (isToday ? 'Still to do' : 'Not done') + '</h2><div class="col" style="gap:8px">' + missed.map((c) => missRow(c, false)).join('') + '</div>' : '') +
+    (optMissed.length ? '<h2 style="font-size:20px;color:#475569">Optional — not done</h2><div class="col" style="gap:8px">' + optMissed.map((c) => missRow(c, true)).join('') + '</div>' : '') +
+    '<p class="small muted" style="margin:0">Take-turns chores (bins, dishwasher) show here only on days they were done. "Not done" uses the chores as they\'re set up now.</p>' +
+    '</div>' + kidNav('me') + '</div>';
+}
 function kidNav(tab) {
   const b = (id, label, icon) => '<button type="button" data-act="tab" data-tab="' + id + '" class="' + (tab === id ? 'on' : '') + '" aria-current="' + (tab === id ? 'page' : 'false') + '">' + ico(icon, 24, tab === id ? 2.2 : 2) + label + '</button>';
   return '<nav class="nav" aria-label="Kid menu">' + b('today', 'Today', 'tasks') + b('rewards', 'Rewards', 'gift') + b('me', 'Me', 'user') + '</nav>';
@@ -795,11 +825,12 @@ function viewKidMe(k) {
   const pctWk = maxWk ? Math.min(100, Math.round(earned / maxWk * 100)) : 0;
   const weekCard = maxWk ? '<div class="card" style="border:2px solid #BFDBFE;box-shadow:0 4px 0 #BFDBFE"><div class="row" style="justify-content:space-between;align-items:baseline"><div class="lbl">This week (since Monday)</div><div style="font-family:var(--display);font-weight:600;font-size:24px">' + earned + ' <span class="small muted">of about ' + maxWk + '</span></div></div><div class="bar grey" style="height:14px"><i style="width:' + pctWk + '%;background:' + colourOf(k) + '"></i></div><div class="small muted">' + maxWk + ' is the most you can get in a week if you do every chore' + (magicOn(k) ? ' and tap the Magic button each night' : '') + '.</div></div>' : '';
   let week = '';
-  for (let i = 0; i < 7; i++) {
+  const nDays = S.moreDays ? 24 : 7;
+  for (let i = 0; i < nDays; i++) {
     const d = L.addDays(today, -i);
     const pts = S.completions.filter((c) => c.kid === k && c.date === d).reduce((s, c) => s + (c.pts || 0), 0);
     const n = S.completions.filter((c) => c.kid === k && c.date === d && c.choreId !== 'magic').length;
-    week += '<div class="list-row"><div class="grow" style="font-weight:800">' + (i === 0 ? 'Today' : L.fmtKey(d)) + '</div><div class="small muted">' + n + ' chore' + (n === 1 ? '' : 's') + '</div><div style="font-weight:800;color:#9A3412;min-width:56px;text-align:right">+' + pts + '</div></div>';
+    week += '<button type="button" class="list-row btnlike" data-act="day" data-kid="' + k + '" data-date="' + d + '"><div class="grow" style="font-weight:800">' + (i === 0 ? 'Today' : L.fmtKey(d)) + '</div><div class="small muted">' + n + ' chore' + (n === 1 ? '' : 's') + '</div><div style="font-weight:800;color:#9A3412;min-width:56px;text-align:right">+' + pts + '</div>' + ico('back', 18, 2.4).replace('M15 5l-7 7 7 7', 'M9 5l7 7-7 7') + '</button>';
   }
   const sw = L.KID_COLOURS.map((c) => '<button type="button" class="swatch' + (colourOf(k) === c ? ' on' : '') + '" style="background:' + c + '" data-act="colour" data-kid="' + k + '" data-colour="' + c + '" aria-label="' + h(L.colourName(c)) + '" title="' + h(L.colourName(c)) + '" aria-pressed="' + (colourOf(k) === c) + '"></button>').join('');
   return '<div class="screen"><header class="band" style="' + kidVars(k) + '"><div class="row">' + backToPicker() + '<span class="avatar" style="width:64px;height:64px;border-radius:22px;font-size:30px;color:' + L.deepOf(colourOf(k)) + '">' + h(kidName(k)[0]) + '</span><div class="grow col"><h1 class="title-xl">' + h(kidName(k)) + '</h1><div class="small">' + points(k) + ' pts · ' + L.money(points(k), perDollar()) + '</div></div></div></header>' +
@@ -812,7 +843,8 @@ function viewKidMe(k) {
     penaltyKidCards(k) + weekCard + magicHistory(k) +
     '<h2 style="font-size:22px;color:' + L.deepOf(colourOf(k)) + '">Recent moments</h2><div class="col" style="gap:10px">' + moments + '</div>' +
     '<h2 style="font-size:22px">My colour</h2><div class="swatches">' + sw + '</div>' +
-    '<h2 style="font-size:22px">This week</h2><div class="col" style="gap:8px">' + week + '</div>' +
+    '<h2 style="font-size:22px">Day by day</h2><p class="small muted" style="margin:-8px 0 0">Tap a day to see which chores were done.</p><div class="col" style="gap:8px">' + week + '</div>' +
+    (S.moreDays ? '' : '<button type="button" class="btn ghost" data-act="more-days">Show older days</button>') +
     (isKidUser() ? '<button type="button" class="btn ghost-red" data-act="signout">Sign out of this phone</button>' : '') +
     '<p class="small muted center" style="margin:0">Tidy Tribe v' + VERSION + '</p>' +
     '</div>' + kidNav('me') + '</div>';
@@ -1239,6 +1271,7 @@ function viewKid() {
   if (!k || !S.config.kids[k]) { S.view = { screen: 'picker' }; return viewPicker(); }
   if (S.view.tab === 'rewards') return viewKidRewards(k);
   if (S.view.tab === 'me') return viewKidMe(k);
+  if (S.view.tab === 'day') return viewKidDay(k, S.view.date);
   return viewKidToday(k);
 }
 function render() {
@@ -1269,6 +1302,8 @@ const ACT = {
   go: (d) => { if (d.screen === 'pin') { openPin(); return; } S.view = { screen: d.screen, tab: 'today' }; render(); window.scrollTo(0, 0); },
   'open-kid': (d) => { S.view = { screen: 'kid', kid: d.kid, tab: 'today' }; render(); window.scrollTo(0, 0); },
   tab: (d) => { S.view.tab = d.tab; render(); window.scrollTo(0, 0); },
+  day: (d) => { S.view.tab = 'day'; S.view.date = d.date; render(); window.scrollTo(0, 0); },
+  'more-days': () => { S.moreDays = true; render(); },
   tick: (d) => tick(d.kid, d.chore),
   request: (d) => requestReward(d.kid, d.reward),
   cashout: (d) => { if (confirm('Ask for ' + L.money(S.config.cashOutLot || 1000, perDollar()) + ' cash?')) requestCashout(d.kid); },
