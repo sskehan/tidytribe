@@ -2,7 +2,7 @@ rules_version = '2';
 
 // Tidy Tribe security rules.
 // Adults (shaun, lyndsey, heidi) can change everything.
-// Kids (alex, emma) can only: tick/untick their own chores (points must match the chore),
+// Kids (alex, emma, brooke) can only: tick/untick their own chores (points must match the chore),
 // request rewards or cash outs for themselves, cancel their own pending requests,
 // pass on a take-turns chore by doing it, tap the nightly Magic button, and choose their own colour. They can never change points directly.
 service cloud.firestore {
@@ -21,7 +21,7 @@ service cloud.firestore {
       return signedIn() && onDomain() && me() in ['shaun', 'lyndsey', 'heidi'];
     }
     function isKid() {
-      return signedIn() && onDomain() && me() in ['alex', 'emma'];
+      return signedIn() && onDomain() && me() in ['alex', 'emma', 'brooke'];
     }
     function isMember() {
       return isAdult() || isKid();

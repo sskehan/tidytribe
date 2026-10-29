@@ -5,10 +5,10 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.15';
+const VERSION = '1.16';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
-const KIDS_WITH_PHONES = ['alex', 'emma'];
-const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma']];
+const KIDS_WITH_PHONES = ['alex', 'emma', 'brooke'];
+const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma'], ['brooke', 'Brooke']];
 const ADMIN_MINUTES = 10;
 const h = L.esc;
 
