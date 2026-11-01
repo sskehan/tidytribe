@@ -165,7 +165,8 @@ export function byTime(a, b) {
   return a.due.localeCompare(b.due) || order.indexOf(a.group) - order.indexOf(b.group) || a.name.localeCompare(b.name);
 }
 // Chores a kid should see on a given date, in time order.
-// ctx.turns: { choreId: kid whose turn it is }, ctx.doneBy: { choreId: kid who did it on this date }
+// ctx.turns: { choreId: kid whose turn it is }, ctx.doneBy: { choreId: kid who did it on this date },
+// ctx.nowMs: current local time (only when listing today)
 export function choresFor(kidId, key, chores, config, ctx) {
   const c = ctx || {};
   const turns = c.turns || {};
@@ -177,9 +178,15 @@ export function choresFor(kidId, key, chores, config, ctx) {
     if (!(ch.days || []).includes(dow)) continue;
     if (ch.schoolOnly && !isSchoolDay(key, config)) continue;
     if (ch.schoolNext && !isSchoolDay(addDays(key, 1), config)) continue;
-    const t = keyToLocalMs(key, ch.due);
-    if (houseAt(kidId, t, config) !== ch.house) continue;
     const mode = shareMode(ch);
+    let t = keyToLocalMs(key, ch.due);
+    // Take-turns chores (bins, dishwasher) on today's date follow the house the kid is at right now,
+    // so on handover days they show before leaving / after arriving. Once ticked today they stay on the list.
+    if (mode === 'turns' && c.nowMs != null && msKey(c.nowMs) === key) {
+      if (doneBy[ch.id] === kidId) { out.push(ch); continue; }
+      t = c.nowMs;
+    }
+    if (houseAt(kidId, t, config) !== ch.house) continue;
     if (mode !== 'each') {
       const present = ch.kids.filter((k) => houseAt(k, t, config) === ch.house);
       if (present.length > 1) {

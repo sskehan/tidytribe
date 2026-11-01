@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.17';
+const VERSION = '1.18';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma', 'brooke'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma'], ['brooke', 'Brooke']];
@@ -159,7 +159,7 @@ function choreCtx(key) {
   for (const c of S.completions) if (c.date === key) doneBy[c.choreId] = c.kid;
   const turns = {};
   for (const [id, t] of Object.entries(S.turns)) turns[id] = t.kid;
-  return { turns, doneBy };
+  return { turns, doneBy, nowMs: key === L.dateKey(new Date()) ? L.localMs(new Date()) : null };
 }
 // Chore pictures (used on picture tiles, e.g. Brooke's). Built-in ones by chore id; an adult can set or remove one in the chore editor.
 const DEFAULT_PICS = { clothes: 'pic-clothes.jpg', washup: 'pic-washup.jpg', gummies: 'pic-gummies.jpg' };
