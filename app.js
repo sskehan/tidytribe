@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.18';
+const VERSION = '1.19';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma', 'brooke'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma'], ['brooke', 'Brooke']];
@@ -1050,13 +1050,15 @@ function choreSummary(c) {
 function adminChores() {
   const house = choreHouse();
   const mine = S.chores.filter((c) => c.house === house);
-  let body = choreRowsByTime(mine, (c) => '<button type="button" class="list-row btnlike" data-act="edit-chore" data-id="' + h(c.id) + '"' + (c.active === false ? ' style="opacity:.6"' : '') + '>' + choreSummary(c) + '</button>');
+  const fl = S.flash && S.flash.until > Date.now() ? S.flash : null;
+  let body = choreRowsByTime(mine, (c) => '<button type="button" class="list-row btnlike' + (fl && fl.id === c.id ? ' just-saved' : '') + '" data-act="edit-chore" data-id="' + h(c.id) + '"' + (c.active === false ? ' style="opacity:.6"' : '') + '>' + choreSummary(c) + '</button>');
   if (!body) body = '<div class="empty">No chores at ' + h(houseName(house)) + ' yet. Add one, or copy chores from the other house.</div>';
   const otherHouses = Object.keys(S.config.houses).filter((x) => x !== house);
   const views = isOwner()
     ? '<div class="grid2">' + Object.keys(S.config.houses).map((x) => '<button type="button" class="btn' + (x === house ? ' dark' : '') + '" data-act="chore-house" data-house="' + h(x) + '" aria-pressed="' + (x === house) + '">' + ico('house', 18, 2) + h(houseName(x)) + '</button>').join('') + '</div><div class="small muted" style="margin-top:-8px">Owner: you can change chores at both houses.</div>'
     : otherHouses.map((x) => '<button type="button" class="btn full" style="border-color:#C7D2FE;color:#3730A3" data-act="other-house" data-house="' + h(x) + '">' + ico('house', 18, 2) + 'See ' + h(houseName(x)) + ' chores</button>').join('');
   return adminScreen(adminTop('Chores', { eyebrow: houseName(house), colour: '#1D4ED8', shadow: '#1E3A8A' }) +
+    (fl ? '<div class="banner ok">' + ico('check', 18, 3) + '<div class="col" style="gap:2px"><span>' + h(fl.text) + '</span><span class="small" style="font-weight:700">Shows under ' + h(fl.sub) + ' (highlighted below)</span></div></div>' : '') +
     views + fairCard(house) +
     '<div class="grid2"><button type="button" class="btn primary" data-act="edit-chore" data-id="">' + ico('plus', 18, 2.4) + 'Add chore</button><button type="button" class="btn" data-act="admin" data-sub="copy">Copy from other house</button></div>' + body);
 }
@@ -1125,6 +1127,7 @@ function adminChoreEdit() {
     '<label class="check"><input type="checkbox" name="schoolNext"' + (v.schoolNext ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">Only the night before a school day</span><span class="small muted">For things like packing the school bag</span></span></label>' +
     '<label class="check"><input type="checkbox" name="optional"' + (v.optional ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">Optional</span><span class="small muted">Still earns points, but isn\'t needed for the Magic button or counted in the weekly check</span></span></label>' +
     '<label class="check"><input type="checkbox" name="active"' + (v.active !== false ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">Active</span><span class="small muted">Untick to pause without deleting</span></span></label></div>' +
+    '<div class="banner err" id="chore-err" hidden></div>' +
     '<button type="submit" class="btn primary big">Save chore</button>' +
     (c ? '<button type="button" class="btn ghost-red" data-act="del-chore" data-id="' + h(id) + '">Delete chore</button>' : '') +
     '</form>');
@@ -1158,9 +1161,36 @@ function submitChore(fd) {
     if (want !== cur) ops.push({ op: 'set', path: 'turns/' + id, data: { kid: want, lastCid: '', prev: '' } });
   }
   touchAdmin();
-  write(ops, 'Chore saved');
+  saveThenList(ops, { id, name, where: L.partOf(data.due).name + ' · ' + daysText(days) + ' · ' + houseName(house) });
+}
+function daysText(days) {
+  if (days.length === 7) return 'every day';
+  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return [1, 2, 3, 4, 5, 6, 0].filter((d) => days.includes(d)).map((d) => names[d]).join(', ');
+}
+// Saves a chore and only then goes back to the list, with a clear "Saved" line at the top.
+// If the save is refused, it stays on the form with the reason, so nothing typed is lost.
+async function saveThenList(ops, info) {
+  const btn = document.querySelector('form[data-form="chore"] button[type="submit"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  const p = S.store.batch(ops);
+  const res = await Promise.race([p.then(() => 'ok', (e) => ({ err: e })), new Promise((r) => setTimeout(() => r('slow'), 6000))]);
+  if (res && res.err) {
+    console.error(res.err);
+    const e = res.err;
+    const why = e && e.code === 'permission-denied' ? 'Firebase refused the change (permission denied). Check you are signed in as an adult and the rules are published.' : 'Could not save: ' + (e && (e.message || e.code) || e);
+    if (btn) { btn.disabled = false; btn.textContent = 'Save chore'; }
+    const box = document.getElementById('chore-err');
+    if (box) { box.textContent = why; box.hidden = false; box.scrollIntoView({ block: 'center' }); }
+    toast(why, true);
+    return;
+  }
+  if (res === 'slow') p.catch((e) => { console.error(e); toast('That chore did not save: ' + (e.message || e.code || e), true); });
+  S.flash = { id: info.id, ok: res === 'ok', text: (res === 'ok' ? 'Saved: ' : 'Saved on this phone — it will sync when back online: ') + info.name, sub: info.where, until: Date.now() + 15000 };
   S.view = { screen: 'admin', sub: 'chores', choreHouse: S.view.choreHouse };
-  render();
+  render(true);
+  window.scrollTo(0, 0);
+  toast(res === 'ok' ? 'Chore saved ✓' : 'Saved on this phone');
 }
 
 function adminRewards() {
@@ -1307,7 +1337,12 @@ function viewKid() {
   if (S.view.tab === 'day') return viewKidDay(k, S.view.date);
   return viewKidToday(k);
 }
-function render() {
+function render(force) {
+  // While a chore or reward form is open, background refreshes (new data, the 1-minute timer) wait,
+  // so nothing typed gets wiped. Changing screen, or force, still redraws.
+  const vk = S.view ? [S.view.screen, S.view.sub, S.view.editId].join('|') : '';
+  if (!force && S.store && S.lastVk === vk && S.view && S.view.screen === 'admin' && (S.view.sub === 'chore' || S.view.sub === 'reward') && app.querySelector('form[data-form]')) { S.pendingRender = false; return; }
+  S.lastVk = vk;
   const ae = document.activeElement;
   if (ae && app.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName) && ae.type !== 'checkbox' && ae.type !== 'radio') {
     S.pendingRender = true;
@@ -1359,7 +1394,7 @@ const ACT = {
     touchAdmin();
     write([{ op: 'delete', path: 'stars/' + s.id }, { op: 'update', path: 'balances/' + s.kid, data: { ['stars.' + starPeriodOf(s)]: inc(-1) } }], 'Star removed');
   },
-  'pic-remove': () => { S.picDraft = { id: S.view.editId || '', pic: null }; render(); },
+  'pic-remove': () => { S.picDraft = { id: S.view.editId || '', pic: null }; render(true); },
   'edit-chore': (d) => { touchAdmin(); S.picDraft = null; S.view = { screen: 'admin', sub: 'chore', editId: d.id || null, choreHouse: S.view.choreHouse }; render(); window.scrollTo(0, 0); },
   'chore-house': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'chores', choreHouse: d.house }; render(); },
   magic: (d) => magicTap(d.kid),
@@ -1544,7 +1579,7 @@ app.addEventListener('submit', (e) => {
 app.addEventListener('change', async (e) => {
   if (e.target.id === 'dbx-wifi') { B.setMeta({ wifiOnly: e.target.checked }); return; }
   if (e.target.id === 'chore-pic' && e.target.files && e.target.files[0]) {
-    try { S.picDraft = { id: S.view.editId || '', pic: await shrinkPhoto(e.target.files[0]) }; render(); toast('Picture ready — tap Save chore'); } catch (err) { toast(err.message || String(err), true); }
+    try { S.picDraft = { id: S.view.editId || '', pic: await shrinkPhoto(e.target.files[0]) }; render(true); toast('Picture ready — tap Save chore'); } catch (err) { toast(err.message || String(err), true); }
     return;
   }
   if (e.target.id === 'restore-file' && e.target.files && e.target.files[0]) {
@@ -1553,6 +1588,7 @@ app.addEventListener('change', async (e) => {
     try { const f = B.parseFile(await file.text()); await restoreData(f.data, f.exportedAt ? whenText(f.exportedAt) : file.name); } catch (err) { toast(err.message || String(err), true); }
   }
 });
+app.addEventListener('input', () => { if (adminOn()) touchAdmin(); });
 app.addEventListener('focusout', () => { setTimeout(() => { if (S.pendingRender) render(); }, 0); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && S.user && S.config !== undefined) { subscribe(); render(); } });
 setInterval(() => {

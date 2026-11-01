@@ -1,6 +1,6 @@
 // Tidy Tribe service worker: lets the app open without internet.
-const CACHE = 'tidytribe-1.18';
-const SHELL = ['./', 'index.html', 'app.css?v=1.18', 'app.js?v=1.18', 'logic.js', 'store.js', 'seed.js', 'backup.js', 'firebase-config.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'pic-clothes.jpg', 'pic-washup.jpg', 'pic-gummies.jpg'];
+const CACHE = 'tidytribe-1.19';
+const SHELL = ['./', 'index.html', 'app.css?v=1.19', 'app.js?v=1.19', 'logic.js', 'store.js', 'seed.js', 'backup.js', 'firebase-config.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'pic-clothes.jpg', 'pic-washup.jpg', 'pic-gummies.jpg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -25,7 +25,8 @@ self.addEventListener('fetch', (e) => {
   }
   if (url.origin === location.origin || url.hostname === 'fonts.googleapis.com') {
     // Network first so updates show straight away; fall back to the saved copy offline.
-    e.respondWith(fetch(req).then((res) => {
+    // Ask GitHub for the newest copy every time (no-cache), so uploads show on the next open.
+    e.respondWith(fetch(req, url.origin === location.origin ? { cache: 'no-cache' } : undefined).then((res) => {
       const copy = res.clone();
       caches.open(CACHE).then((c) => c.put(req, copy));
       return res;
