@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.19';
+const VERSION = '1.20';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma', 'brooke'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma'], ['brooke', 'Brooke']];
@@ -699,9 +699,12 @@ function viewPicker() {
   const shared = sharedKids();
   let custodyLine = '';
   if (shared.length) {
-    const hs = L.houseAt(shared[0], nowMs, S.config);
-    const nc = nextChange(shared[0], nowMs);
-    custodyLine = '<div class="chipline">' + ico('house', 16, 2, '#FACC15') + h(shared.map(kidName).join(' & ')) + ' at ' + h(houseName(hs)) + (nc ? ' till ' + h(L.fmtLocalMs(nc.at).replace(/^(\w+) \d+ \w+, /, '$1 ')) : '') + '</div>';
+    const till = (k) => { const nc = nextChange(k, nowMs); return nc ? ' till ' + L.fmtLocalMs(nc.at).replace(/^(\w+) \d+ \w+, /, '$1 ') : ''; };
+    const homes = shared.map((k) => L.houseAt(k, nowMs, S.config));
+    const together = homes.every((x) => x === homes[0]) && shared.every((k) => till(k) === till(shared[0]));
+    custodyLine = together
+      ? '<div class="chipline">' + ico('house', 16, 2, '#FACC15') + h(shared.map(kidName).join(' & ')) + ' at ' + h(houseName(homes[0])) + h(till(shared[0])) + '</div>'
+      : shared.map((k, i) => '<div class="chipline">' + ico('house', 16, 2, '#FACC15') + h(kidName(k)) + ' at ' + h(houseName(homes[i])) + h(till(k)) + '</div>').join('');
   }
   const cards = kids.map((k) => {
     const here = L.houseAt(k, nowMs, S.config);
@@ -952,9 +955,12 @@ function adminHome() {
   const shared = sharedKids();
   let custody = '';
   if (shared.length) {
-    const hs = L.houseAt(shared[0], nowMs, S.config);
-    const nc = nextChange(shared[0], nowMs);
-    custody = '<div class="row" style="background:#2A3550;border-radius:16px;padding:12px 14px;gap:10px">' + ico('cal', 24, 2, '#FACC15') + '<div class="col" style="gap:2px"><div style="font-weight:800;font-size:15px">' + h(shared.map(kidName).join(' & ')) + ' at ' + h(houseName(hs)) + (nc ? ' until ' + h(L.fmtLocalMs(nc.at)) : '') + '</div><div class="small" style="color:#C9D1E3">' + (nc ? 'Then ' + h(houseName(nc.to)) : '') + Object.keys(S.config.kids).filter((k) => S.config.kids[k].custody !== 'shared' && S.config.kids[k].house === house).map((k) => ' · ' + h(kidName(k)) + ' always here').join('') + '</div></div></div>';
+    const always = Object.keys(S.config.kids).filter((k) => S.config.kids[k].custody !== 'shared' && S.config.kids[k].house === house).map((k) => ' · ' + h(kidName(k)) + ' always here').join('');
+    const line = (who, k) => { const hs = L.houseAt(k, nowMs, S.config); const nc = nextChange(k, nowMs); return { top: h(who) + ' at ' + h(houseName(hs)) + (nc ? ' until ' + h(L.fmtLocalMs(nc.at)) : ''), sub: nc ? 'Then ' + h(houseName(nc.to)) : '', key: hs + '|' + (nc ? nc.at : '') }; };
+    const lines = shared.map((k) => line(kidName(k), k));
+    const together = lines.every((x) => x.key === lines[0].key);
+    const rows = together ? [line(shared.map(kidName).join(' & '), shared[0])] : lines;
+    custody = '<div class="row" style="background:#2A3550;border-radius:16px;padding:12px 14px;gap:10px">' + ico('cal', 24, 2, '#FACC15') + '<div class="col" style="gap:6px">' + rows.map((r, i) => '<div class="col" style="gap:2px"><div style="font-weight:800;font-size:15px">' + r.top + '</div><div class="small" style="color:#C9D1E3">' + r.sub + (i === rows.length - 1 ? always : '') + '</div></div>').join('') + '</div></div>';
   }
   const pend = S.reqPending.filter((r) => r.status === 'pending' && r.house === house);
   const pendHtml = pend.length ? pend.map((r) => '<div class="card" style="box-shadow:0 4px 0 ' + colourOf(r.kid) + '33"><div class="row">' + solidAvatar(r.kid, 'sm') + '<div class="grow col"><div style="font-weight:800;font-size:16px">' + h(kidName(r.kid)) + ' · ' + h(r.title) + '</div><div class="small muted">' + r.pts + ' pts on hold · has ' + points(r.kid) + ' · asked ' + (r.createdAt ? L.fmtClock(r.createdAt) + ' ' + L.fmtKey(L.dateKey(r.createdAt)) : '') + '</div></div></div><div class="grid2"><button type="button" class="btn danger" data-act="decide" data-id="' + h(r.id) + '" data-ok="0">Decline</button><button type="button" class="btn green" data-act="decide" data-id="' + h(r.id) + '" data-ok="1">Approve</button></div></div>').join('') : '<div class="empty">Nothing waiting.</div>';
@@ -1230,14 +1236,18 @@ function adminSchedule() {
   if (shared.length) {
     let t = nowMs;
     for (let i = 0; i < 6; i++) {
-      const hs = L.houseAt(shared[0], t, cfg);
-      const nc = nextChange(shared[0], t);
-      weeks += '<div class="row" style="min-height:44px"><div class="grow col" style="gap:0"><span style="font-weight:800;font-size:15px">' + (i === 0 ? 'Now' : h(L.fmtLocalMs(t))) + ' → ' + (nc ? h(L.fmtLocalMs(nc.at)) : '…') + '</span></div><span class="count-pill" style="background:' + (hs === houses[0] ? '#DBEAFE;color:#1E40AF' : '#FCE7F3;color:#9D174D') + '">' + h(houseName(hs)) + '</span></div>';
+      const per = shared.map((k) => ({ k, hs: L.houseAt(k, t, cfg) }));
+      const ends = shared.map((k) => nextChange(k, t)).filter(Boolean).map((x) => x.at);
+      const nc = ends.length ? { at: Math.min(...ends) } : null;
+      const same = per.every((x) => x.hs === per[0].hs);
+      const pill = (hs, who) => '<span class="count-pill" style="background:' + (hs === houses[0] ? '#DBEAFE;color:#1E40AF' : '#FCE7F3;color:#9D174D') + '">' + (who ? h(who) + ': ' : '') + h(houseName(hs)) + '</span>';
+      const hs = per[0].hs;
+      weeks += '<div class="row" style="min-height:44px"><div class="grow col" style="gap:0"><span style="font-weight:800;font-size:15px">' + (i === 0 ? 'Now' : h(L.fmtLocalMs(t))) + ' → ' + (nc ? h(L.fmtLocalMs(nc.at)) : '…') + '</span></div>' + (same ? pill(hs) : '<span class="col" style="gap:4px;align-items:flex-end">' + per.map((x) => pill(x.hs, kidName(x.k))).join('') + '</span>') + '</div>';
       if (!nc) break;
       t = nc.at;
     }
   }
-  const ov = (cfg.overrides || []).map((o, i) => '<div class="list-row"><div class="grow col"><div style="font-weight:800">' + h(houseName(o.house)) + '</div><div class="small muted">' + h(L.fmtLocalMs(L.parseLocal(o.from))) + ' → ' + h(L.fmtLocalMs(L.parseLocal(o.to))) + '</div></div><button type="button" class="icon-btn light" data-act="del-override" data-i="' + i + '" aria-label="Remove">' + ico('trash', 18, 2) + '</button></div>').join('') || '<div class="small muted">No changes to the usual pattern.</div>';
+  const ov = (cfg.overrides || []).map((o, i) => '<div class="list-row"><div class="grow col"><div style="font-weight:800">' + h(((o.kids && o.kids.length < shared.length) ? o.kids.map(kidName).join(' & ') + ' only' : shared.map(kidName).join(' & ')) + ' → ' + houseName(o.house)) + '</div><div class="small muted">' + h(L.fmtLocalMs(L.parseLocal(o.from))) + ' → ' + h(L.fmtLocalMs(L.parseLocal(o.to))) + '</div></div><button type="button" class="icon-btn light" data-act="del-override" data-i="' + i + '" aria-label="Remove">' + ico('trash', 18, 2) + '</button></div>').join('') || '<div class="small muted">No changes to the usual pattern.</div>';
   const terms = (cfg.terms || []).slice().sort((a, b) => a.start.localeCompare(b.start)).map((tr) => '<div class="list-row"><div class="grow" style="font-weight:800">' + L.fmtKey(tr.start) + ' – ' + L.fmtKey(tr.end) + ' ' + tr.start.slice(0, 4) + '</div><button type="button" class="icon-btn light" data-act="del-term" data-start="' + tr.start + '" aria-label="Remove term">' + ico('trash', 18, 2) + '</button></div>').join('');
   const dateList = (field, label) => {
     const items = (cfg[field] || []).slice().sort();
@@ -1252,7 +1262,7 @@ function adminSchedule() {
       '<div class="field"><label for="s-first">At that time they went to</label><select class="input" id="s-first" name="first">' + houses.map((x) => '<option value="' + x + '"' + (x === c.firstHouse ? ' selected' : '') + '>' + h(houseName(x)) + '</option>').join('') + '</select></div>' +
       '<button class="btn primary" type="submit">Save pattern</button></form>' +
       '<div class="card"><h2 style="font-size:18px">Swaps &amp; holidays</h2>' + ov +
-      '<form data-form="override" class="col" style="gap:10px"><div class="field"><label for="o-from">From</label><input class="input" id="o-from" name="from" type="datetime-local" required></div><div class="field"><label for="o-to">Until</label><input class="input" id="o-to" name="to" type="datetime-local" required></div><div class="field"><label for="o-house">Kids are at</label><select class="input" id="o-house" name="house">' + houses.map((x) => '<option value="' + x + '">' + h(houseName(x)) + '</option>').join('') + '</select></div><button class="btn" type="submit">' + ico('plus', 18, 2.4) + 'Add swap or holiday</button></form></div>' : '') +
+      '<form data-form="override" class="col" style="gap:10px"><div class="field"><label for="o-from">From</label><input class="input" id="o-from" name="from" type="datetime-local" required></div><div class="field"><label for="o-to">Until</label><input class="input" id="o-to" name="to" type="datetime-local" required></div><div class="lbl">Which kids</div><div class="chips">' + shared.map((k) => '<label class="check" style="min-height:44px;padding:0 14px;border-radius:999px;border:2px solid ' + colourOf(k) + '"><input type="checkbox" name="okids" value="' + k + '" checked style="accent-color:' + colourOf(k) + '"><span style="font-weight:800">' + h(kidName(k)) + '</span></label>').join('') + '</div><div class="field"><label for="o-house">Goes to</label><select class="input" id="o-house" name="house">' + houses.map((x) => '<option value="' + x + '">' + h(houseName(x)) + '</option>').join('') + '</select></div><button class="btn" type="submit">' + ico('plus', 18, 2.4) + 'Add swap or holiday</button></form></div>' : '') +
     '<div class="card"><h2 style="font-size:18px">School terms</h2><p class="small muted" style="margin:0">After School chores only show on school days. NSW public school dates for 2026–2027 are loaded.</p><div class="col" style="gap:6px">' + terms + '</div>' +
     '<form data-form="term" class="col" style="gap:10px"><div class="grid2"><div class="field"><label for="t-s">Term starts</label><input class="input" id="t-s" name="start" type="date" required></div><div class="field"><label for="t-e">Term ends</label><input class="input" id="t-e" name="end" type="date" required></div></div><button class="btn" type="submit">' + ico('plus', 18, 2.4) + 'Add term</button></form></div>' +
     '<div class="card">' + dateList('publicHolidays', 'Public holidays') + dateList('pupilFreeDays', 'Pupil-free days') + '</div>');
@@ -1446,7 +1456,9 @@ const FORMS = {
     const from = fd.get('from').slice(0, 16); const to = fd.get('to').slice(0, 16);
     if (to <= from) { toast('"Until" must be after "From"', true); return; }
     touchAdmin();
-    write([{ op: 'update', path: 'config/main', data: { overrides: (S.config.overrides || []).concat([{ from, to, house: fd.get('house'), kids: sharedKids() }]) } }], 'Added');
+    const okids = fd.getAll('okids').filter((k) => sharedKids().includes(k));
+    if (!okids.length) { toast('Tick at least one kid', true); return; }
+    write([{ op: 'update', path: 'config/main', data: { overrides: (S.config.overrides || []).concat([{ from, to, house: fd.get('house'), kids: okids }]) } }], 'Added');
   },
   term: (fd) => {
     const start = fd.get('start'); const end = fd.get('end');
