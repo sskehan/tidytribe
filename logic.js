@@ -250,11 +250,11 @@ export function expectedPoints(kidId, house, chores, config, startKey, days, inc
       if (ch.schoolNext && !isSchoolDay(addDays(key, 1), config)) continue;
       const t = keyToLocalMs(key, ch.due);
       if (houseAt(kidId, t, config) !== house) continue;
-      let share = 1;
-      if (shareMode(ch) !== 'each') {
-        const present = ch.kids.filter((k) => houseAt(k, t, config) === house).length;
-        share = present > 1 ? 1 / present : 1;
-      }
+      // Same owners as the Today screen: a swap-each-day chore counts only on the kid's own days,
+      // and a take-turns chore counts as an equal share over time.
+      const mode = shareMode(ch);
+      if (mode === 'daily' && dailyWho(ch, key) !== kidId) continue;
+      const share = mode === 'turns' ? 1 / ch.kids.length : 1;
       total += ch.pts * share;
     }
   }

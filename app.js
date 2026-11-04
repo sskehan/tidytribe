@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.21';
+const VERSION = '1.22';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma', 'brooke'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma'], ['brooke', 'Brooke']];
@@ -1458,6 +1458,9 @@ const FORMS = {
     touchAdmin();
     const okids = fd.getAll('okids').filter((k) => sharedKids().includes(k));
     if (!okids.length) { toast('Tick at least one kid', true); return; }
+    // Two swaps for the same kid can't overlap, otherwise which house they're at would be unclear.
+    const clash = (S.config.overrides || []).find((x) => (x.kids || sharedKids()).some((k) => okids.includes(k)) && from < x.to && x.from < to);
+    if (clash) { toast('That overlaps another swap (' + L.fmtLocalMs(L.parseLocal(clash.from)) + ' → ' + L.fmtLocalMs(L.parseLocal(clash.to)) + '). Remove it first.', true); return; }
     write([{ op: 'update', path: 'config/main', data: { overrides: (S.config.overrides || []).concat([{ from, to, house: fd.get('house'), kids: okids }]) } }], 'Added');
   },
   term: (fd) => {
