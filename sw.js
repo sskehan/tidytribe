@@ -1,6 +1,6 @@
 // Tidy Tribe service worker: lets the app open without internet.
-const CACHE = 'tidytribe-1.20';
-const SHELL = ['./', 'index.html', 'app.css?v=1.20', 'app.js?v=1.20', 'logic.js', 'store.js', 'seed.js', 'backup.js', 'firebase-config.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'pic-clothes.jpg', 'pic-washup.jpg', 'pic-gummies.jpg'];
+const CACHE = 'tidytribe-1.21';
+const SHELL = ['./', 'index.html', 'app.css?v=1.21', 'app.js?v=1.21', 'logic.js', 'store.js', 'seed.js', 'backup.js', 'firebase-config.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'pic-clothes.jpg', 'pic-washup.jpg', 'pic-gummies.jpg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

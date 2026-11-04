@@ -80,8 +80,11 @@ export function addDays(key, n) {
 }
 export function dayNumber(key) { return Math.round(keyToLocalMs(key) / DAY); }
 // "Swap each day" chores: who has it on a date (when all its kids are at that house), and the offset that gives `pick` the chore on `key`.
-export function dailyWho(ch, key) { const n = (ch.kids || []).length; if (!n) return null; return ch.kids[(((dayNumber(key) + (ch.rotateOffset || 0)) % n) + n) % n]; }
-export function offsetFor(kids, pick, key) { const n = kids.length; const i = kids.indexOf(pick); if (!n || i < 0) return 0; return (((i - dayNumber(key)) % n) + n) % n; }
+// Swap-each-day runs by weekday, so each kid keeps the same days every week (Mon/Wed/Fri vs Tue/Thu/Sat).
+// Counting days instead would flip the weekdays every week, because 7 is odd.
+function swapIndex(n, key, offset) { return ((keyDow(key) + 1 + (offset || 0)) % n + n) % n; }
+export function dailyWho(ch, key) { const n = (ch.kids || []).length; if (!n) return null; return ch.kids[swapIndex(n, key, ch.rotateOffset)]; }
+export function offsetFor(kids, pick, key) { const n = kids.length; const i = kids.indexOf(pick); if (!n || i < 0) return 0; return (((i - keyDow(key) - 1) % n) + n) % n; }
 // Real Date of the next Sydney midnight after `now`.
 export function nextMidnight(now) {
   const offset = localMs(now) - Math.floor(now.getTime() / 60000) * 60000;
@@ -188,19 +191,17 @@ export function choresFor(kidId, key, chores, config, ctx) {
     }
     if (houseAt(kidId, t, config) !== ch.house) continue;
     if (mode !== 'each') {
-      const present = ch.kids.filter((k) => houseAt(k, t, config) === ch.house);
-      if (present.length > 1) {
-        let who;
-        if (mode === 'daily') {
-          const idx = (((dayNumber(key) + (ch.rotateOffset || 0)) % present.length) + present.length) % present.length;
-          who = present[idx];
-        } else if (doneBy[ch.id] && present.includes(doneBy[ch.id])) {
-          who = doneBy[ch.id]; // already done today: stays with whoever did it until tomorrow
-        } else {
-          who = present.includes(turns[ch.id]) ? turns[ch.id] : present[0];
-        }
-        if (who !== kidId) continue;
+      // The owner comes from the rotation itself, not from who happens to be at the house.
+      // So when a kid is away (a swap or handover), their turn is not handed to the other kid.
+      let who;
+      if (mode === 'daily') {
+        who = ch.kids[swapIndex(ch.kids.length, key, ch.rotateOffset)];
+      } else if (doneBy[ch.id] && ch.kids.includes(doneBy[ch.id])) {
+        who = doneBy[ch.id]; // already done today: stays with whoever did it until tomorrow
+      } else {
+        who = ch.kids.includes(turns[ch.id]) ? turns[ch.id] : ch.kids[0];
       }
+      if (who !== kidId) continue;
     }
     out.push(ch);
   }
