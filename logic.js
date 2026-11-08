@@ -208,6 +208,32 @@ export function choresFor(kidId, key, chores, config, ctx) {
   out.sort(byTime);
   return out;
 }
+// ---------- adding a missed tick to a past day (adults only) ----------
+export const PAST_DAYS = 7;
+// The PAST_DAYS days before today, yesterday first.
+export function pastDayKeys(todayKey, n) {
+  const out = [];
+  for (let i = 1; i <= (n || PAST_DAYS); i++) out.push(addDays(todayKey, -i));
+  return out;
+}
+// Chores an adult can add for a kid on a past day. Daily-swap chores follow the normal owner rule.
+// Take-turns chores are offered to every kid in their rota (the adult picks who did it), because the
+// app only knows whose turn it is now, not whose it was on that day.
+export function choresForPast(kidId, key, chores, config, ctx) {
+  const asEach = chores.map((c) => (shareMode(c) === 'turns' ? Object.assign({}, c, { rotate: false }) : c));
+  const orig = new Map(chores.map((c) => [c.id, c]));
+  // Give back the real chore objects (not the 'each' copies), so a take-turns chore is still recognisable as one.
+  return choresFor(kidId, key, asEach, config, Object.assign({}, ctx || {}, { nowMs: null })).map((c) => orig.get(c.id));
+}
+// Is `key` one of the days an adult may still add ticks for?
+export function canAddPast(key, todayKey) {
+  return pastDayKeys(todayKey).includes(key);
+}
+// Kids whose ticks an adult's account may not see (Heidi can't see Brooke's). Enforced by the security rules;
+// the app uses this to ask only for what the account may read.
+export const HIDDEN_FROM = { heidi: ['brooke'] };
+export function hiddenKids(adultId) { return HIDDEN_FROM[adultId] || []; }
+export function readableKids(adultId, config) { return Object.keys(config.kids).filter((k) => !hiddenKids(adultId).includes(k)); }
 export function completionId(kidId, key, choreId) { return kidId + '_' + key + '_' + choreId; }
 export function isLate(ch, doneDate, key) {
   return localMs(doneDate) > keyToLocalMs(key, ch.due);

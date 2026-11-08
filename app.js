@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.22';
+const VERSION = '1.23';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma', 'brooke'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma'], ['brooke', 'Brooke']];
@@ -123,6 +123,10 @@ function write(ops, okMsg) {
 }
 const isAdultUser = () => ADULTS.includes(S.user);
 const isKidUser = () => KIDS_WITH_PHONES.includes(S.user);
+// Some adult accounts may not see certain kids' ticks (Heidi can't see Brooke's; the security rules enforce it).
+// Such an account also can't make a complete backup, so backups are done from another adult's phone.
+const hiddenFromMe = (k) => L.hiddenKids(S.user).includes(k);
+const cannotSeeAll = () => L.hiddenKids(S.user).length > 0;
 function adminOn() { return S.admin && Date.now() < S.admin.until; }
 function touchAdmin() { if (S.admin) S.admin.until = Date.now() + ADMIN_MINUTES * 60000; }
 function houseName(hid) { return (S.config.houses[hid] && S.config.houses[hid].name) || hid; }
@@ -290,7 +294,7 @@ async function applyPenalties() {
       if (start < since) continue;                  // never charge the week the check was switched on
       if (L.msKey(end) >= todayKey) continue;       // wait until the day after the week ends
       for (const k of P.kids) {
-        if (!visible.includes(k) || !S.config.kids[k]) continue;
+        if (!visible.includes(k) || hiddenFromMe(k) || !S.config.kids[k]) continue;
         const id = 'penalty_' + k + '_' + L.msKey(start);
         if (await S.store.exists('adjustments/' + id)) continue;
         const r = L.periodChores(k, start, end, S.chores, S.config, doneIdsFor(k));
@@ -375,6 +379,37 @@ function nextChange(k, fromMs) {
 function sharedKids() { return Object.keys(S.config.kids).filter((k) => S.config.kids[k].custody === 'shared'); }
 
 // ---------- data ----------
+// Ticks. Most accounts read them all at once. An account that may not see some kid's ticks (Heidi / Brooke) has to
+// ask kid by kid, because the security rules only allow a query that stays inside what that account may read.
+function subscribeCompletions(st, key, onErr) {
+  const from = L.addDays(key, -24);
+  const hidden = L.hiddenKids(S.user);
+  if (!hidden.length) {
+    S.unsubs.push(st.listen('completions', { where: ['date', '>=', from] }, (rows, pend, cached) => { S.completions = rows; if (!cached) S.fresh.completions = true; render(); }, onErr));
+    S.unsubs.push(st.listen('completions', { where: ['choreId', '==', 'magic'] }, (rows) => { S.magic = rows; render(); }, onErr));
+    return;
+  }
+  const kids = KIDS_WITH_PHONES.filter((k) => !hidden.includes(k));
+  const rowsBy = {}; const magicBy = {}; const fresh = {};
+  const merge = () => { S.completions = [].concat(...kids.map((k) => rowsBy[k] || [])); S.magic = [].concat(...kids.map((k) => magicBy[k] || [])); };
+  for (const k of kids) {
+    let stop = () => {}; let slow = false;
+    const start = (spec, keep) => st.listen('completions', spec, (rows, pend, cached) => {
+      rowsBy[k] = keep ? rows.filter(keep) : rows;
+      if (!cached) fresh[k] = true;
+      if (kids.every((x) => fresh[x])) S.fresh.completions = true;
+      merge(); render();
+    }, (e) => {
+      if (e && e.code === 'failed-precondition' && !slow) {
+        // The Firestore index (kid + date) hasn't been created yet: read this kid's ticks without the date filter until it is.
+        slow = true; S.indexMissing = true; stop(); stop = start({ where: ['kid', '==', k] }, (r) => r.date >= from); render();
+      } else onErr(e);
+    });
+    stop = start({ where: [['kid', '==', k], ['date', '>=', from]] });
+    S.unsubs.push(() => stop());
+    S.unsubs.push(st.listen('completions', { where: [['kid', '==', k], ['choreId', '==', 'magic']] }, (rows) => { magicBy[k] = rows; merge(); render(); }, onErr));
+  }
+}
 function subscribe() {
   const key = L.dateKey(new Date());
   const year = key.slice(0, 4);
@@ -393,8 +428,7 @@ function subscribe() {
   S.unsubs.push(st.listen('prefs', {}, (rows) => { S.prefs = Object.fromEntries(rows.map((r) => [r.id, r])); render(); }, onErr));
   S.unsubs.push(st.listen('turns', {}, (rows) => { S.turns = Object.fromEntries(rows.map((r) => [r.id, r])); render(); }, onErr));
   S.fresh = {};
-  S.unsubs.push(st.listen('completions', { where: ['date', '>=', L.addDays(key, -24)] }, (rows, pend, cached) => { S.completions = rows; if (!cached) S.fresh.completions = true; render(); }, onErr));
-  S.unsubs.push(st.listen('completions', { where: ['choreId', '==', 'magic'] }, (rows) => { S.magic = rows; render(); }, onErr));
+  subscribeCompletions(st, key, onErr);
   S.unsubs.push(st.listen('requests', { where: ['status', '==', 'pending'] }, (rows) => { S.reqPending = rows; render(); }, onErr));
   S.unsubs.push(st.listen('requests', { orderBy: ['createdAt', 'desc'], limit: 40 }, (rows) => { S.reqRecent = rows; render(); }, onErr));
   S.unsubs.push(st.listen('stars', { orderBy: ['at', 'desc'], limit: 3000 }, (rows) => { S.stars = rows; render(); }, onErr));
@@ -417,7 +451,7 @@ function subscribeMeds() {
 function unsubscribeAll() {
   S.unsubs.forEach((u) => { try { u(); } catch (e) { /* ignore */ } });
   S.unsubs = []; S.subsKey = ''; S.medsOn = false;
-  Object.assign(S, { config: undefined, chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, magic: [], completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [], error: null });
+  Object.assign(S, { config: undefined, chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, magic: [], completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [], error: null, indexMissing: false });
 }
 
 // ---------- actions ----------
@@ -492,6 +526,7 @@ function runSetup() {
   write(ops, 'Tidy Tribe is set up!');
 }
 async function exportBackup() {
+  if (cannotSeeAll()) { toast("This account can't read everything, so it can't make a complete copy. Use Shaun's or Lyndsey's phone.", true); return; }
   try {
     const blob = new Blob([B.makeFile(await S.store.dumpAll(), VERSION)], { type: 'application/json' });
     const a = document.createElement('a');
@@ -505,7 +540,7 @@ async function exportBackup() {
 // ---------- Dropbox backups ----------
 let backingUp = false;
 async function runBackup(kind) {
-  if (backingUp) return false;
+  if (backingUp || cannotSeeAll()) return false;
   backingUp = true; render();
   try { await B.backupNow(() => S.store.dumpAll(), VERSION, kind); return true; } catch (e) {
     console.error(e);
@@ -515,12 +550,13 @@ async function runBackup(kind) {
 }
 // Once a day, from any adult phone that has Dropbox connected (Wi-Fi only unless switched off).
 function autoBackup() {
-  if (!S.store || !isAdultUser() || !S.config || !B.connected() || backingUp || !navigator.onLine) return;
+  if (!S.store || !isAdultUser() || cannotSeeAll() || !S.config || !B.connected() || backingUp || !navigator.onLine) return;
   if (B.meta().lastSnapDay === new Date().toDateString() || B.blockedOnMobile()) return;
   runBackup('');
 }
 // Replaces everything in Tidy Tribe with a backup. A safety copy goes to Dropbox first when connected.
 async function restoreData(data, whenText) {
+  if (cannotSeeAll()) { toast("This account can't read everything, so it can't restore safely. Use Shaun's or Lyndsey's phone.", true); return; }
   if (!confirm('Restore the copy from ' + whenText + '?\n\nEverything in Tidy Tribe (both houses) is replaced with that copy.' + (B.connected() ? ' A safety copy of the current data is saved to Dropbox first.' : ''))) return;
   touchAdmin();
   if (B.connected()) {
@@ -557,6 +593,7 @@ function whenText(iso) {
   return L.fmtKey(L.dateKey(d)) + ' ' + L.dateKey(d).slice(0, 4) + ', ' + L.fmtClock(d);
 }
 function backupCard() {
+  if (cannotSeeAll()) return '<div class="card" style="border:2px solid #BFDBFE"><h2 style="font-size:18px">Backup</h2><p class="small" style="margin:0">Backups and restores are done from Shaun\'s or Lyndsey\'s phone. This account can\'t read all of the family data, so a copy made here would be missing some of it.</p></div>';
   const m = B.meta();
   const on = B.connected();
   const fileRow = '<div class="grid2"><button type="button" class="btn" data-act="backup">' + ico('cloud', 18, 2) + 'Download a copy</button>' +
@@ -634,8 +671,8 @@ function viewKidDay(k, d) {
   const doneRows = ticks.map((c) => {
     const ch = S.chores.find((x) => x.id === c.choreId);
     const magic = c.choreId === 'magic';
-    const late = !magic && ch && c.at && L.isLate(ch, c.at, d);
-    return '<div class="list-row"><span class="pts-tile" style="background:' + (magic ? '#422006' : 'var(--green)') + ';width:40px;height:40px;font-size:14px">' + (magic ? starIco(20, '#FACC15') : ico('check', 20, 3)) + '</span><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(magic ? 'Magic button' : (c.choreName || (ch && ch.name) || 'Chore')) + '</div><div class="small muted">' + (c.at ? 'Ticked ' + L.fmtClock(c.at) : '') + (ch && !magic ? ' · due ' + L.fmtTime(ch.due) : '') + (late ? ' <span class="tag late">Late</span>' : '') + (c.house && c.house !== L.houseAt(k, L.keyToLocalMs(d, '12:00'), S.config) ? ' · ' + h(houseName(c.house)) : '') + '</div></div><div style="font-weight:800;color:#15803D">+' + (c.pts || 0) + '</div></div>';
+    const late = !magic && !c.addedLate && ch && c.at && L.isLate(ch, c.at, d);
+    return '<div class="list-row"><span class="pts-tile" style="background:' + (magic ? '#422006' : 'var(--green)') + ';width:40px;height:40px;font-size:14px">' + (magic ? starIco(20, '#FACC15') : ico('check', 20, 3)) + '</span><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(magic ? 'Magic button' : (c.choreName || (ch && ch.name) || 'Chore')) + '</div><div class="small muted">' + (c.addedLate ? 'Added ' + h(whenText(c.at)) : (c.at ? 'Ticked ' + L.fmtClock(c.at) : '')) + (ch && !magic ? ' · due ' + L.fmtTime(ch.due) : '') + (late ? ' <span class="tag late">Late</span>' : '') + (c.addedLate ? ' <span class="tag opt">Added later by ' + h(adultName(c.addedBy)) + '</span>' : '') + (c.house && c.house !== L.houseAt(k, L.keyToLocalMs(d, '12:00'), S.config) ? ' · ' + h(houseName(c.house)) : '') + '</div></div><div style="font-weight:800;color:#15803D">+' + (c.pts || 0) + '</div></div>';
   }).join('');
   const missRow = (c, opt) => '<div class="list-row" style="' + (opt ? 'opacity:.7' : '') + '"><span class="pts-tile" style="background:' + (opt ? '#94A3B8' : '#B91C1C') + ';width:40px;height:40px;font-size:14px">' + (opt ? '–' : '✕') + '</span><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">Due ' + L.fmtTime(c.due) + (opt ? ' · <span class="tag opt">Optional</span>' : '') + '</div></div><div class="small muted" style="font-weight:800;white-space:nowrap">' + c.pts + ' pts</div></div>';
   const here = L.houseAt(k, L.keyToLocalMs(d, '12:00'), S.config);
@@ -946,7 +983,7 @@ function adminScreen(inner) {
 function viewAdmin() {
   if (!adminOn()) { S.admin = null; S.view = { screen: 'picker' }; return isKidUser() ? viewKid() : viewPicker(); }
   const sub = S.view.sub || 'home';
-  const fn = { home: adminHome, ab: adminAB, chores: adminChores, chore: adminChoreEdit, copy: adminCopy, other: adminOther, rewards: adminRewards, reward: adminRewardEdit, schedule: adminSchedule, balances: adminBalances, people: adminPeople, settings: adminSettings, restore: adminRestore, meds: adminMeds }[sub] || adminHome;
+  const fn = { home: adminHome, ab: adminAB, chores: adminChores, chore: adminChoreEdit, copy: adminCopy, other: adminOther, rewards: adminRewards, reward: adminRewardEdit, schedule: adminSchedule, balances: adminBalances, people: adminPeople, settings: adminSettings, restore: adminRestore, meds: adminMeds, past: adminPast }[sub] || adminHome;
   return fn();
 }
 function adminHome() {
@@ -964,7 +1001,7 @@ function adminHome() {
   }
   const pend = S.reqPending.filter((r) => r.status === 'pending' && r.house === house);
   const pendHtml = pend.length ? pend.map((r) => '<div class="card" style="box-shadow:0 4px 0 ' + colourOf(r.kid) + '33"><div class="row">' + solidAvatar(r.kid, 'sm') + '<div class="grow col"><div style="font-weight:800;font-size:16px">' + h(kidName(r.kid)) + ' · ' + h(r.title) + '</div><div class="small muted">' + r.pts + ' pts on hold · has ' + points(r.kid) + ' · asked ' + (r.createdAt ? L.fmtClock(r.createdAt) + ' ' + L.fmtKey(L.dateKey(r.createdAt)) : '') + '</div></div></div><div class="grid2"><button type="button" class="btn danger" data-act="decide" data-id="' + h(r.id) + '" data-ok="0">Decline</button><button type="button" class="btn green" data-act="decide" data-id="' + h(r.id) + '" data-ok="1">Approve</button></div></div>').join('') : '<div class="empty">Nothing waiting.</div>';
-  const kids = L.kidsForHouse(house, S.config).filter((k) => L.houseAt(k, nowMs, S.config) === house);
+  const kids = L.kidsForHouse(house, S.config).filter((k) => L.houseAt(k, nowMs, S.config) === house && !hiddenFromMe(k));
   const prog = kids.map((k) => {
     const t = todayInfo(k);
     const pct = t.total ? Math.round(t.done / t.total * 100) : 0;
@@ -974,12 +1011,12 @@ function adminHome() {
   const tile = (sub, label, icon, bg) => '<button type="button" class="manage" style="background:' + bg + '" data-act="admin" data-sub="' + sub + '">' + ico(icon, 28, 2) + label + '</button>';
   return '<div class="screen cool"><header class="band navy"><div class="row"><div class="grow col" style="gap:0"><div class="eyebrow" style="color:#FACC15">Admin · ' + h(adultName(S.admin.as)) + '</div><h1 class="title-xl">' + h(houseName(house)) + '</h1></div><button type="button" class="btn" style="background:#2A3550;color:#fff;border-color:#2A3550;min-height:44px" data-act="lock">' + ico('lock', 16, 2) + 'Lock</button></div>' + custody +
     '<button type="button" class="btn gold" data-act="admin" data-sub="ab">' + starIco(30, '#422006') + 'Above and Beyond</button></header>' +
-    '<div class="pad">' + demoBanner() +
+    '<div class="pad">' + demoBanner() + (S.indexMissing ? '<div class="banner err">This phone is loading ticks the slow way because a Firestore index is missing. Create it (SETUP.md, step 10) and this goes away.</div>' : '') +
     '<section class="col" style="gap:10px"><div class="row" style="gap:8px"><h2 style="font-size:21px">Waiting for you</h2>' + (pend.length ? '<span style="background:#DC2626;color:#fff;border-radius:999px;padding:2px 10px;font-weight:800;font-size:14px">' + pend.length + '</span>' : '') + '</div>' + pendHtml + '</section>' +
     '<section class="col" style="gap:10px"><h2 style="font-size:21px">Today</h2>' + prog + '</section>' +
     '<section class="col" style="gap:10px"><h2 style="font-size:21px">Manage</h2><div class="grid3">' +
     tile('chores', 'Chores', 'tasks', '#1D4ED8') + tile('rewards', 'Rewards', 'gift', '#DB2777') + tile('schedule', 'Schedule', 'cal', '#4F46E5') +
-    tile('balances', 'Balances', 'dollar', '#15803D') + tile('people', 'People &amp; PINs', 'people', '#0F766E') + tile('settings', 'Settings', 'gear', '#475569') + tile('meds', 'Meds &amp; notes', 'pill', '#BE185D') +
+    tile('balances', 'Balances', 'dollar', '#15803D') + tile('people', 'People &amp; PINs', 'people', '#0F766E') + tile('settings', 'Settings', 'gear', '#475569') + tile('meds', 'Meds &amp; notes', 'pill', '#BE185D') + tile('past', 'Past days', 'clock', '#7C3AED') +
     '</div></section></div></div>';
 }
 
@@ -1285,6 +1322,87 @@ function adminBalances() {
     (adj ? '<h2 style="font-size:18px">Recent changes</h2><div class="col" style="gap:8px">' + adj + '</div>' : ''));
 }
 
+// ---------- past days: an adult adds (or takes back) a missed tick, up to 7 days back ----------
+let pastBusy = false;
+function pastKids() { return L.kidsForHouse(adminHouse(), S.config).filter((k) => !hiddenFromMe(k)); }
+function adminPast() {
+  const kids = pastKids();
+  const today = L.dateKey(new Date());
+  const days = L.pastDayKeys(today);
+  const f = S.form.past || (S.form.past = {});
+  if (!kids.includes(f.kid)) f.kid = kids[0];
+  if (!days.includes(f.date)) f.date = days[0];
+  const top = adminTop('Past days', { eyebrow: 'Add a missed tick', colour: '#6D28D9', shadow: '#5B21B6' });
+  if (!f.kid) return adminScreen(top + '<div class="empty">No kids to show.</div>');
+  const k = f.kid; const d = f.date;
+  const cm = completionMap();
+  const ticks = S.completions.filter((c) => c.kid === k && c.date === d).sort((a, b) => (a.at ? a.at.getTime() : 0) - (b.at ? b.at.getTime() : 0));
+  const tickedIds = new Set(ticks.map((c) => c.choreId));
+  const todo = L.choresForPast(k, d, S.chores, S.config, choreCtx(d)).filter((c) => !tickedIds.has(c.id));
+  const kidBtns = kids.length > 1 ? '<div class="row" style="gap:8px;flex-wrap:wrap">' + kids.map((x) => '<button type="button" class="btn' + (x === k ? ' primary' : '') + '" data-act="past-kid" data-kid="' + x + '">' + h(kidName(x)) + '</button>').join('') + '</div>' : '';
+  const dayBtns = '<div class="row" style="gap:8px;flex-wrap:wrap">' + days.map((x) => '<button type="button" class="btn' + (x === d ? ' primary' : '') + '" data-act="past-day" data-date="' + x + '">' + h(L.fmtKey(x)) + '</button>').join('') + '</div>';
+  const doneRows = ticks.map((c) => {
+    const magic = c.choreId === 'magic';
+    const canTake = c.addedLate && !magic;
+    return '<div class="list-row"><span class="pts-tile" style="background:' + (magic ? '#422006' : 'var(--green)') + ';width:40px;height:40px;font-size:14px">' + (magic ? starIco(20, '#FACC15') : ico('check', 20, 3)) + '</span><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(magic ? 'Magic button' : (c.choreName || 'Chore')) + '</div><div class="small muted">' + (c.addedLate ? 'Added later by ' + h(adultName(c.addedBy)) : (c.at ? 'Ticked ' + L.fmtClock(c.at) : '')) + '</div></div><div style="font-weight:800;color:#15803D">+' + (c.pts || 0) + '</div>' +
+      (canTake ? '<button type="button" class="btn ghost-red" data-act="past-take" data-kid="' + k + '" data-date="' + d + '" data-chore="' + h(c.choreId) + '">Take back</button>' : '') + '</div>';
+  }).join('');
+  const todoRows = todo.map((c) => '<div class="list-row"><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(c.name) + (c.optional ? ' <span class="tag opt">Optional</span>' : '') + '</div><div class="small muted">Due ' + L.fmtTime(c.due) + (L.shareMode(c) === 'turns' ? ' · take-turns' : '') + ' · ' + c.pts + ' pts</div></div>' +
+    '<button type="button" class="btn primary" data-act="past-add" data-kid="' + k + '" data-date="' + d + '" data-chore="' + h(c.id) + '">' + ico('plus', 18, 2.6) + 'Add</button></div>').join('');
+  return adminScreen(top +
+    '<p class="small muted" style="margin:0">Pick who and which day (up to ' + L.PAST_DAYS + ' days back), then add what was done. Points go on the balance straight away. Weekly checks already worked out are not changed, and the Magic button can\'t be added. For anything older, use Balances › Add points.</p>' +
+    kidBtns + dayBtns +
+    '<h2 style="font-size:20px">' + h(kidName(k)) + ' · ' + h(L.fmtKey(d)) + '</h2>' +
+    '<h3 style="font-size:17px;color:#15803D;margin:0">Done</h3><div class="col" style="gap:8px">' + (doneRows || '<div class="empty">Nothing ticked this day.</div>') + '</div>' +
+    '<h3 style="font-size:17px;color:#B91C1C;margin:0">Not ticked</h3><div class="col" style="gap:8px">' + (todoRows || '<div class="empty">Everything for this day is ticked.</div>') + '</div>' +
+    '<p class="small muted" style="margin:0">Take-turns chores (bins, dishwasher) are listed for every kid in the rota, so choose the kid who did it. Adding one here doesn\'t change whose turn it is now.</p>');
+}
+async function pastAdd(kid, date, choreId) {
+  if (pastBusy || !adminOn() || !isAdultUser()) return;
+  const today = L.dateKey(new Date());
+  const ch = S.chores.find((c) => c.id === choreId);
+  if (!ch || hiddenFromMe(kid) || !L.canAddPast(date, today)) { toast('That one can\'t be added here.', true); return; }
+  const cid = L.completionId(kid, date, choreId);
+  if (S.completions.some((c) => c.id === cid)) { toast('Already ticked.', true); render(); return; }
+  if (!navigator.onLine) { toast('You need a connection for this, so the points stay correct.', true); return; }
+  if (!confirm('Add "' + ch.name + '" for ' + kidName(kid) + ' on ' + L.fmtKey(date) + '?\n\n+' + ch.pts + ' points go on ' + kidName(kid) + '\'s balance now.')) return;
+  pastBusy = true; touchAdmin();
+  try {
+    // Ask the server (not this phone's copy) in case someone else just ticked it.
+    if (await S.store.exists('completions/' + cid)) { toast('Already ticked.', true); return; }
+    const now = new Date();
+    // The tick and the points go in as one all-or-nothing write. undoUntil is already past so a kid can't undo it.
+    await S.store.batch([
+      { op: 'set', path: 'completions/' + cid, data: { kid, choreId, choreName: ch.name, pts: ch.pts, date, at: now, undoUntil: new Date(now.getTime() - 60000), by: S.user, house: ch.house, addedLate: true, addedBy: S.user } },
+      { op: 'update', path: 'balances/' + kid, data: { points: inc(ch.pts), lastOp: cid } }
+    ]);
+    toast('Added +' + ch.pts + ' for ' + kidName(kid) + ' (' + L.fmtKey(date) + ')');
+  } catch (e) {
+    console.error(e);
+    toast(e && e.code === 'permission-denied' ? 'Not allowed — nothing was changed.' : 'Could not save, nothing was changed: ' + (e.message || e), true);
+  } finally { pastBusy = false; render(); }
+}
+async function pastTake(kid, date, choreId) {
+  if (pastBusy || !adminOn() || !isAdultUser()) return;
+  const cid = L.completionId(kid, date, choreId);
+  const c = S.completions.find((x) => x.id === cid);
+  if (!c || !c.addedLate || hiddenFromMe(kid) || !L.canAddPast(date, L.dateKey(new Date()))) { toast('Only ticks added on this screen can be taken back here.', true); return; }
+  if (L.penaltyCfg(S.config).floor && points(kid) < (c.pts || 0)) { toast(kidName(kid) + ' has already spent some of these points, so it can\'t be taken back.', true); return; }
+  if (!navigator.onLine) { toast('You need a connection for this, so the points stay correct.', true); return; }
+  if (!confirm('Take back "' + (c.choreName || 'this tick') + '" for ' + kidName(kid) + ' on ' + L.fmtKey(date) + '?\n\n' + (c.pts || 0) + ' points come off ' + kidName(kid) + '\'s balance.')) return;
+  pastBusy = true; touchAdmin();
+  try {
+    await S.store.batch([
+      { op: 'delete', path: 'completions/' + cid },
+      { op: 'update', path: 'balances/' + kid, data: { points: inc(-(c.pts || 0)), lastOp: cid } }
+    ]);
+    toast('Taken back');
+  } catch (e) {
+    console.error(e);
+    toast(e && e.code === 'permission-denied' ? 'Not allowed — nothing was changed.' : 'Could not save, nothing was changed: ' + (e.message || e), true);
+  } finally { pastBusy = false; render(); }
+}
+
 function adminPeople() {
   const cfg = S.config;
   const me = S.admin.as;
@@ -1382,6 +1500,10 @@ const ACT = {
   tab: (d) => { S.view.tab = d.tab; render(); window.scrollTo(0, 0); },
   day: (d) => { S.view.tab = 'day'; S.view.date = d.date; render(); window.scrollTo(0, 0); },
   'more-days': () => { S.moreDays = true; render(); },
+  'past-kid': (d) => { touchAdmin(); S.form.past = Object.assign({}, S.form.past, { kid: d.kid }); render(); },
+  'past-day': (d) => { touchAdmin(); S.form.past = Object.assign({}, S.form.past, { date: d.date }); render(); },
+  'past-add': (d) => pastAdd(d.kid, d.date, d.chore),
+  'past-take': (d) => pastTake(d.kid, d.date, d.chore),
   tick: (d) => tick(d.kid, d.chore),
   request: (d) => requestReward(d.kid, d.reward),
   cashout: (d) => { if (confirm('Ask for ' + L.money(S.config.cashOutLot || 1000, perDollar()) + ' cash?')) requestCashout(d.kid); },

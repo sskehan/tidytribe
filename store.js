@@ -52,7 +52,8 @@ async function firebaseStore(cfg) {
   const ref = (path) => fsM.doc(db, ...path.split('/'));
   function buildQuery(name, spec) {
     const parts = [];
-    if (spec.where) parts.push(fsM.where(spec.where[0], spec.where[1], spec.where[2]));
+    // spec.where is one [field, op, value] or a list of them (several filters need a Firestore index when one is a range).
+    if (spec.where) for (const w of (Array.isArray(spec.where[0]) ? spec.where : [spec.where])) parts.push(fsM.where(w[0], w[1], w[2]));
     if (spec.orderBy) parts.push(fsM.orderBy(spec.orderBy[0], spec.orderBy[1] || 'asc'));
     if (spec.limit) parts.push(fsM.limit(spec.limit));
     return fsM.query(fsM.collection(db, name), ...parts);
@@ -154,7 +155,7 @@ function demoStore() {
     }
     let rows = Object.entries(data[l.name]).map(([id, d]) => Object.assign({ id }, clone(d)));
     const s = l.spec || {};
-    if (s.where) rows = rows.filter((r) => cmp(r[s.where[0]], s.where[1], s.where[2]));
+    if (s.where) for (const w of (Array.isArray(s.where[0]) ? s.where : [s.where])) rows = rows.filter((r) => cmp(r[w[0]], w[1], w[2]));
     if (s.orderBy) {
       const [f, dir] = s.orderBy;
       rows.sort((a, b) => {

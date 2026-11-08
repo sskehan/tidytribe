@@ -110,3 +110,25 @@ their colour. They can't change points. Adults can change everything.
   **Add user** again with the same email and a new password. Their points are not affected.
 - **Forgotten PIN**: another adult can't see it. Sign in to Firebase console →
   Firestore Database → `config` → `main` → `pins` → delete your line, then create a new PIN in the app.
+
+---
+
+## 10. v1.23: hide Brooke's ticks from Heidi (do these in this order)
+
+Heidi's phone has to ask for Alex's and Emma's ticks one kid at a time, and Firestore needs an
+index for that. **Order matters:** index first, app second, rules last.
+
+1. **Create the index.** Firebase console → **Firestore Database → Indexes → Composite → Add index**.
+   Collection ID: `completions`. Fields: `kid` (Ascending), then `date` (Ascending).
+   Query scope: **Collection**. Tap **Create** and wait until the status says **Enabled**
+   (a few minutes). (The same details are in `firestore.indexes.json`.)
+2. **Upload the v1.23 app files** to GitHub, then open the app on Heidi's phone and check
+   Admin → Settings shows version 1.23. If a yellow/red "index is missing" note appears on her
+   Admin home, step 1 isn't finished yet.
+3. **Publish the new rules last.** Firestore Database → Rules → paste the new `firestore.rules`
+   → Publish. Then open Heidi's phone: Alex's and Emma's ticks should still show, with no
+   "not allowed to read" message. If anything looks wrong, paste the old rules back
+   (`firestore.rules.v1.22.bak`) and tell Claude.
+
+Heidi's account can no longer make or restore backups (it can't read everything, so a copy
+made there would be incomplete). Do backups from Shaun's or Lyndsey's phone.
