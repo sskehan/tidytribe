@@ -229,6 +229,18 @@ export function choresForPast(kidId, key, chores, config, ctx) {
 export function canAddPast(key, todayKey) {
   return pastDayKeys(todayKey).includes(key);
 }
+// ---------- Important chores: points come off if not done that day ----------
+// A chore can be Important unless it's Optional or take-turns. It counts from the day AFTER it was
+// made Important (importantSince), so nobody is charged for a day they didn't know about.
+export function canBeImportant(ch) { return !ch.optional && shareMode(ch) !== 'turns'; }
+export function missId(kidId, key, choreId) { return 'miss_' + kidId + '_' + key + '_' + choreId; }
+export function unmissId(kidId, key, choreId) { return 'unmiss_' + kidId + '_' + key + '_' + choreId; }
+// Important chores due to `kidId` on day `key` (normal owner and house rules) that weren't ticked.
+export function importantMisses(kidId, key, chores, config, doneIds) {
+  return choresFor(kidId, key, chores, config, {}).filter((c) =>
+    c.important && canBeImportant(c) && c.importantSince && key > c.importantSince &&
+    !doneIds.has(completionId(kidId, key, c.id)));
+}
 // Kids whose ticks an adult's account may not see (Heidi can't see Brooke's). Enforced by the security rules;
 // the app uses this to ask only for what the account may read.
 export const HIDDEN_FROM = { heidi: ['brooke'] };

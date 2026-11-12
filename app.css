@@ -217,3 +217,8 @@ form:not(:has(#c-share option[value="daily"]:checked)) .only-daily { display: no
 @media (min-width: 700px) { .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; } .tile-pic { max-width: 180px; } .tile { font-size: 22px; } }
 .banner.ok { background: #DCFCE7; color: #14532D; border: 2px solid #86EFAC; display: flex; gap: 10px; align-items: flex-start; }
 .list-row.just-saved { outline: 3px solid #22C55E; outline-offset: 2px; background: #F0FDF4; }
+.tag.imp { background: #B91C1C; }
+.tile.imp:not(.done) { outline: 5px solid #B91C1C; outline-offset: 3px; }
+.imp-warn { background: #FEF2F2; border: 2px solid #DC2626; color: #7F1D1D; }
+.imp-ico { flex: none; width: 34px; height: 34px; border-radius: 999px; background: #DC2626; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 22px; }
+.tile .badge.imp-badge { background: #DC2626; color: #fff; font-weight: 900; font-size: 22px; }

@@ -5,7 +5,7 @@ import * as B from './backup.js';
 import { SEED_CONFIG, SEED_CHORES, SEED_REWARDS, SEED_BALANCES, SEED_TURNS } from './seed.js';
 import { FIREBASE_CONFIG } from './firebase-config.js';
 
-const VERSION = '1.23';
+const VERSION = '1.24';
 const ADULTS = ['shaun', 'lyndsey', 'heidi'];
 const KIDS_WITH_PHONES = ['alex', 'emma', 'brooke'];
 const LOGIN_PEOPLE = [['shaun', 'Shaun'], ['lyndsey', 'Lyndsey'], ['heidi', 'Heidi'], ['alex', 'Alex'], ['emma', 'Emma'], ['brooke', 'Brooke']];
@@ -14,7 +14,7 @@ const h = L.esc;
 
 const S = {
   store: null, user: undefined, config: undefined,
-  chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, magic: [], completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [],
+  chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, magic: [], completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [], missAdj: [],
   view: { screen: 'picker', tab: 'today' }, login: { who: null }, pin: null, admin: null, form: {},
   unsubs: [], subsKey: '', error: null, pendingRender: false
 };
@@ -205,7 +205,7 @@ function todayInfo(k) {
     if (!ch.optional && L.shareMode(ch) !== 'turns') { need++; if (c) needDone++; }
   }
   // need / needDone: chores that count for the Magic button (optional ones don't).
-  return { now, key, list, cm, done, pts, total: list.length, need, needDone };
+  return { kid: k, now, key, list, cm, done, pts, total: list.length, need, needDone };
 }
 // ---------- Magic button ----------
 function magicOn(k) { return L.magicCfg(S.config).kids.includes(k); }
@@ -309,11 +309,65 @@ async function applyPenalties() {
     }
   } catch (e) { console.warn('weekly check', e); } finally { penaltyBusy = false; }
 }
+// ---------- Important chores (points off if not done that day) ----------
+let missBusy = false;
+// Runs on adult phones only. Looks at the last 7 finished days. Each Important chore a kid should have done but
+// didn't is charged once (fixed record id; the rules make it create-only, so two phones can't both charge it).
+// If the tick turns up later (a kid's phone that was offline, or an adult adds it in Past days) the points are
+// given back once. "Never below 0" is respected.
+async function applyMisses() {
+  if (missBusy || !isAdultUser() || !S.config || !S.fresh || !S.fresh.completions || !S.fresh.chores || !S.fresh.balances || !S.fresh.missAdj || !navigator.onLine) return;
+  if (!S.chores.some((c) => c.important) && !S.missAdj.some((a) => a.miss)) return;
+  missBusy = true;
+  try {
+    const P = L.penaltyCfg(S.config);
+    const days = L.pastDayKeys(L.dateKey(new Date()));
+    const have = new Set(S.missAdj.map((a) => a.id));
+    const kids = L.kidsForHouse(L.adultHouse(S.user, S.config), S.config).filter((k) => !hiddenFromMe(k) && S.config.kids[k]);
+    for (const k of kids) {
+      const done = doneIdsFor(k);
+      let bal = points(k);
+      // 1. Give back points for misses that have since been ticked.
+      for (const m of S.missAdj.filter((a) => a.miss && a.kid === k && days.includes(a.day))) {
+        if (!(m.pts < 0) || !done.has(L.completionId(k, m.day, m.choreId))) continue;
+        const uid = L.unmissId(k, m.day, m.choreId);
+        if (have.has(uid) || await S.store.exists('adjustments/' + uid)) continue;
+        const nm = (S.chores.find((c) => c.id === m.choreId) || {}).name || 'the chore';
+        await S.store.batch([
+          { op: 'set', path: 'adjustments/' + uid, data: { kid: k, pts: -m.pts, reason: 'Given back: ' + nm + ' was done after all (' + L.fmtKey(m.day) + ')', by: 'auto', at: new Date(), day: m.day, choreId: m.choreId, auto: true, unmiss: true } },
+          { op: 'update', path: 'balances/' + k, data: { points: inc(-m.pts), lastOp: 'adj_' + uid } }
+        ]);
+        bal += -m.pts; have.add(uid);
+      }
+      // 2. Take points off for Important chores not done.
+      for (const key of days) {
+        for (const ch of L.importantMisses(k, key, S.chores, S.config, done)) {
+          const id = L.missId(k, key, ch.id);
+          if (have.has(id) || await S.store.exists('adjustments/' + id)) continue;
+          const take = P.floor ? Math.min(ch.pts, Math.max(0, bal)) : ch.pts;
+          await S.store.batch([
+            { op: 'set', path: 'adjustments/' + id, data: { kid: k, pts: -take, reason: 'Important chore not done: ' + ch.name + ' (' + L.fmtKey(key) + ')' + (take < ch.pts ? ' — only ' + take + ' taken so points stay at 0' : ''), by: 'auto', at: new Date(), day: key, choreId: ch.id, auto: true, miss: true } },
+            { op: 'update', path: 'balances/' + k, data: { points: inc(-take), lastOp: 'adj_' + id } }
+          ]);
+          bal -= take; have.add(id);
+        }
+      }
+    }
+  } catch (e) { console.warn('important check', e); } finally { missBusy = false; }
+}
+function importantKidCard(k) {
+  const days = L.pastDayKeys(L.dateKey(new Date()));
+  const rows = S.missAdj.filter((a) => a.kid === k && (a.miss || a.unmiss) && days.includes(a.day)).sort((a, b) => (b.day + (b.unmiss ? 1 : 0)).localeCompare(a.day + (a.unmiss ? 1 : 0)));
+  if (!rows.length) return '';
+  const net = rows.reduce((t, a) => t + (a.pts || 0), 0);
+  return '<div class="card" style="background:#FEF2F2;border:2px solid #FCA5A5"><div class="row" style="justify-content:space-between"><div style="font-weight:800;color:#991B1B">Important chores · last 7 days</div><div style="font-family:var(--display);font-weight:600;font-size:22px;color:' + (net < 0 ? '#B91C1C' : '#15803D') + '">' + (net > 0 ? '+' : '') + net + '</div></div>' +
+    rows.map((a) => '<div class="row small" style="justify-content:space-between;gap:10px;color:' + (a.unmiss ? '#166534' : '#7F1D1D') + '"><span>' + h(a.reason) + '</span><b>' + (a.pts > 0 ? '+' : '') + a.pts + '</b></div>').join('') + '</div>';
+}
 function penaltyKidCards(k) {
   if (!penaltyOn(k)) return '';
   const P = L.penaltyCfg(S.config);
   let out = '';
-  const recent = S.adjustments.filter((a) => a.kid === k && a.auto && a.at && (Date.now() - a.at.getTime()) < 9 * 864e5);
+  const recent = S.adjustments.filter((a) => a.kid === k && a.auto && a.period && a.at && (Date.now() - a.at.getTime()) < 9 * 864e5);
   for (const a of recent) out += '<div class="card" style="background:#FEE2E2;border:2px solid #FCA5A5"><div class="row" style="justify-content:space-between"><div style="font-weight:800;color:#991B1B">Points taken off</div><div style="font-family:var(--display);font-weight:600;font-size:22px;color:#B91C1C">' + a.pts + '</div></div><div class="small" style="color:#7F1D1D">' + h(a.reason) + '</div></div>';
   const nowL = L.localMs(new Date());
   const cur = L.penaltyPeriod(nowL, S.config);
@@ -433,6 +487,8 @@ function subscribe() {
   S.unsubs.push(st.listen('requests', { orderBy: ['createdAt', 'desc'], limit: 40 }, (rows) => { S.reqRecent = rows; render(); }, onErr));
   S.unsubs.push(st.listen('stars', { orderBy: ['at', 'desc'], limit: 3000 }, (rows) => { S.stars = rows; render(); }, onErr));
   S.unsubs.push(st.listen('adjustments', { orderBy: ['at', 'desc'], limit: 30 }, (rows) => { S.adjustments = rows; render(); }, onErr));
+  // Important-chore deductions and give-backs from the last 12 days (only those records have a 'day' field).
+  S.unsubs.push(st.listen('adjustments', { where: ['day', '>=', L.addDays(key, -12)] }, (rows, pend, cached) => { S.missAdj = rows; if (!cached) S.fresh.missAdj = true; render(); }, onErr));
   if (S.config) subscribeMeds();
 }
 // Medication notes: one document per kid. Each phone only listens to the kids it is allowed to see.
@@ -451,7 +507,7 @@ function subscribeMeds() {
 function unsubscribeAll() {
   S.unsubs.forEach((u) => { try { u(); } catch (e) { /* ignore */ } });
   S.unsubs = []; S.subsKey = ''; S.medsOn = false;
-  Object.assign(S, { config: undefined, chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, magic: [], completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [], error: null, indexMissing: false });
+  Object.assign(S, { config: undefined, chores: [], rewards: [], balances: {}, prefs: {}, turns: {}, meds: {}, magic: [], completions: [], reqPending: [], reqRecent: [], stars: [], adjustments: [], missAdj: [], error: null, indexMissing: false });
 }
 
 // ---------- actions ----------
@@ -571,8 +627,11 @@ async function restoreData(data, whenText) {
       if (!(col in data)) continue; // not in this backup (or not readable by this adult): leave as is
       const want = data[col] || {};
       const have = current[col] || {};
-      for (const id of Object.keys(have)) if (!(id in want)) ops.push({ op: 'delete', path: col + '/' + id });
-      for (const [id, doc] of Object.entries(want)) ops.push({ op: 'set', path: col + '/' + id, data: doc });
+      // Automatic deductions (penalty_, miss_) can never be changed or deleted (security rules), so restore leaves
+      // existing ones alone; otherwise the whole restore would be refused part-way through.
+      const locked = (id) => col === 'adjustments' && /^(penalty|miss)_/.test(id);
+      for (const id of Object.keys(have)) if (!(id in want) && !locked(id)) ops.push({ op: 'delete', path: col + '/' + id });
+      for (const [id, doc] of Object.entries(want)) if (!(locked(id) && id in have)) ops.push({ op: 'set', path: col + '/' + id, data: doc });
     }
     // Write in chunks: at most 400 changes or about 4 MB at a time (chore pictures make some changes large).
     let chunk = []; let size = 0;
@@ -775,11 +834,22 @@ function kidBand(k, t) {
     '</header>';
 }
 
+// Important chores that will cost points if still not ticked at midnight today.
+function willCharge(ch, t) { return ch.important && L.canBeImportant(ch) && ch.importantSince && t.key > ch.importantSince; }
+function importantWarning(t) {
+  const left = t.list.filter((ch) => willCharge(ch, t) && !t.cm[L.completionId(t.kid, t.key, ch.id)]);
+  if (!left.length) return '';
+  const total = left.reduce((n, ch) => n + (ch.pts || 0), 0);
+  return '<div class="card imp-warn" role="alert"><div class="row" style="gap:10px;align-items:flex-start"><span class="imp-ico" aria-hidden="true">!</span><div class="col" style="gap:4px">' +
+    '<div style="font-weight:800">' + (left.length === 1 ? '1 Important chore' : left.length + ' Important chores') + ' still to do today</div>' +
+    '<div class="small">' + left.map((ch) => h(ch.name) + ' (−' + ch.pts + ')').join(' · ') + '</div>' +
+    '<div class="small" style="font-weight:700">If not ticked by midnight, ' + total + ' point' + (total === 1 ? ' is' : 's are') + ' taken off.</div></div></div></div>';
+}
 function viewKidToday(k) {
   const t = todayInfo(k);
   if (S.config.kids[k].simple) return viewSimpleToday(k, t);
   let body = '';
-  body = magicCard(k, t);
+  body = importantWarning(t) + magicCard(k, t);
   if (!t.total) {
     body = '<div class="empty">No chores for today at ' + h(houseName(L.houseAt(k, L.localMs(t.now), S.config))) + '. Enjoy!</div>';
   }
@@ -812,6 +882,7 @@ function choreRow(k, ch, t, g) {
   const meta = (done ? 'Done ' + L.fmtClock(c.at) + ' · due ' + L.fmtTime(ch.due) : 'Due ' + L.fmtTime(ch.due)) +
     (late ? ' <span class="tag late">Late</span>' : '') +
     (ch.optional ? ' <span class="tag opt">Optional</span>' : '') +
+    (ch.important ? ' <span class="tag imp">' + (!done && willCharge(ch, t) ? 'Important · −' + ch.pts + ' if not done today' : 'Important') + '</span>' : '') +
     (share ? ' <span class="tag turn">' + h(share) + '</span>' : '');
   const locked = done && !isAdultUser() && c.undoUntil && c.undoUntil <= t.now;
   return '<div class="chore' + (done ? ' done' : '') + '" style="box-shadow:0 3px 0 ' + g.light + ';border-color:' + (done ? '' : g.light) + '">' +
@@ -821,7 +892,7 @@ function choreRow(k, ch, t, g) {
 }
 function viewSimpleToday(k, t) {
   let body = '';
-  body = magicCard(k, t);
+  body = importantWarning(t) + magicCard(k, t);
   if (!t.total) body = '<div class="empty">No jobs today!</div>';
   let i = 0;
   for (const p of L.PARTS) {
@@ -830,7 +901,7 @@ function viewSimpleToday(k, t) {
     body += partHead(p, items, k, t, 24) + '<div class="tiles">';
     for (const ch of items) {
       const done = !!t.cm[L.completionId(k, t.key, ch.id)];
-      body += '<button type="button" class="tile' + (done ? ' done' : '') + '" style="background:' + TILE_COLOURS[i++ % TILE_COLOURS.length] + '" data-act="tick" data-kid="' + k + '" data-chore="' + h(ch.id) + '" aria-pressed="' + done + '" aria-label="' + h(ch.name) + ', ' + ch.pts + ' points' + (done ? ', done' : '') + '">' + '<span class="pts">' + coinIco(18) + '+' + ch.pts + '</span>' + (picOf(ch) ? '<img class="tile-pic" src="' + h(picOf(ch)) + '" alt="">' : ico(choreIcon(ch.name), 52, 1.8)) + '<span>' + h(ch.name) + '</span>' + (done ? '<span class="badge">' + ico('check', 22, 3.2) + '</span>' : '') + '</button>';
+      body += '<button type="button" class="tile' + (done ? ' done' : '') + (ch.important ? ' imp' : '') + '" style="background:' + TILE_COLOURS[i++ % TILE_COLOURS.length] + '" data-act="tick" data-kid="' + k + '" data-chore="' + h(ch.id) + '" aria-pressed="' + done + '" aria-label="' + h(ch.name) + ', ' + ch.pts + ' points' + (done ? ', done' : '') + '">' + '<span class="pts">' + coinIco(18) + '+' + ch.pts + '</span>' + (picOf(ch) ? '<img class="tile-pic" src="' + h(picOf(ch)) + '" alt="">' : ico(choreIcon(ch.name), 52, 1.8)) + '<span>' + h(ch.name) + '</span>' + (done ? '<span class="badge">' + ico('check', 22, 3.2) + '</span>' : (willCharge(ch, t) ? '<span class="badge imp-badge" aria-label="Important">!</span>' : '')) + '</button>';
     }
     body += '</div></section>';
   }
@@ -906,7 +977,7 @@ function viewKidMe(k) {
     '<div class="col" style="gap:6px"><div class="months" role="img" aria-label="Above and Beyond by month">' + bars + '</div><div class="mlabels" aria-hidden="true">' + labels + '</div></div>' +
     (past.length ? '<div class="small" style="color:#C9D1E3">Past tallies: ' + past.map((t) => h(t.label) + ' — ' + t.n).join(' · ') + '</div>' : '<div class="small" style="color:#C9D1E3">Counted separately from points. Each tally\'s total stays in your profile.</div>') +
     '</div>' +
-    penaltyKidCards(k) + weekCard + magicHistory(k) +
+    penaltyKidCards(k) + importantKidCard(k) + weekCard + magicHistory(k) +
     '<h2 style="font-size:22px;color:' + L.deepOf(colourOf(k)) + '">Recent moments</h2><div class="col" style="gap:10px">' + moments + '</div>' +
     '<h2 style="font-size:22px">My colour</h2><div class="swatches">' + sw + '</div>' +
     '<h2 style="font-size:22px">Day by day</h2><p class="small muted" style="margin:-8px 0 0">Tap a day to see which chores were done.</p><div class="col" style="gap:8px">' + week + '</div>' +
@@ -1088,7 +1159,7 @@ function choreSummary(c) {
   const mode = L.shareMode(c);
   const turn = S.turns[c.id] && S.turns[c.id].kid;
   const shareTxt = mode === 'daily' ? ' · swaps daily (' + kidName(L.dailyWho(c, L.dateKey(new Date()))) + ' today)' : mode === 'turns' ? ' · takes turns' + (turn && c.kids.includes(turn) ? ' (' + kidName(turn) + '\'s turn)' : '') : '';
-  return '<span class="pts-tile" style="background:' + g.colour + ';width:44px;height:44px;font-size:16px">' + c.pts + '</span><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + L.fmtTime(c.due) + ' · ' + h(g.name) + ' · ' + h(c.kids.map(kidName).join(', ')) + h(shareTxt) + (c.schoolOnly ? ' · school days' : '') + (c.schoolNext ? ' · night before school' : '') + (c.optional ? ' · optional' : '') + (c.active === false ? ' · paused' : '') + '</div>' + (c.note ? '<div class="small" style="color:#334155">' + h(c.note) + '</div>' : '') + '</div>';
+  return '<span class="pts-tile" style="background:' + g.colour + ';width:44px;height:44px;font-size:16px">' + c.pts + '</span><div class="grow col"><div style="font-weight:800">' + h(c.name) + '</div><div class="small muted">' + L.fmtTime(c.due) + ' · ' + h(g.name) + ' · ' + h(c.kids.map(kidName).join(', ')) + h(shareTxt) + (c.important ? ' · important' : '') + (c.schoolOnly ? ' · school days' : '') + (c.schoolNext ? ' · night before school' : '') + (c.optional ? ' · optional' : '') + (c.active === false ? ' · paused' : '') + '</div>' + (c.note ? '<div class="small" style="color:#334155">' + h(c.note) + '</div>' : '') + '</div>';
 }
 function adminChores() {
   const house = choreHouse();
@@ -1169,6 +1240,7 @@ function adminChoreEdit() {
     '<label class="check"><input type="checkbox" name="schoolOnly"' + (v.schoolOnly ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">School days only</span><span class="small muted">Hidden on weekends, public holidays and school holidays</span></span></label>' +
     '<label class="check"><input type="checkbox" name="schoolNext"' + (v.schoolNext ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">Only the night before a school day</span><span class="small muted">For things like packing the school bag</span></span></label>' +
     '<label class="check"><input type="checkbox" name="optional"' + (v.optional ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">Optional</span><span class="small muted">Still earns points, but isn\'t needed for the Magic button or counted in the weekly check</span></span></label>' +
+    '<label class="check"><input type="checkbox" name="important"' + (v.important ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">Important</span><span class="small muted">Must be done every day it\'s due. If it isn\'t ticked by midnight, its points are taken off. Starts the day after you turn it on. Can\'t be used with Optional or Take turns.</span></span></label>' +
     '<label class="check"><input type="checkbox" name="active"' + (v.active !== false ? ' checked' : '') + '><span class="col" style="gap:2px"><span style="font-weight:800">Active</span><span class="small muted">Untick to pause without deleting</span></span></label></div>' +
     '<div class="banner err" id="chore-err" hidden></div>' +
     '<button type="submit" class="btn primary big">Save chore</button>' +
@@ -1189,7 +1261,12 @@ function submitChore(fd) {
   const pts = Math.max(0, Math.round(Number(fd.get('pts')) || 0));
   const share = kids.length > 1 ? (fd.get('rotate') || '') : '';
   if (share === 'daily' && !kids.includes(fd.get('todayKid'))) { toast('Pick who does it today from the kids ticked', true); return; }
-  const data = { name, group: fd.get('group'), due: fd.get('due'), pts, kids, house, days, rotate: share || false, rotateOffset: share === 'daily' ? L.offsetFor(kids, fd.get('todayKid'), L.dateKey(new Date())) : 0, schoolOnly: !!fd.get('schoolOnly'), schoolNext: !!fd.get('schoolNext'), optional: !!fd.get('optional'), active: !!fd.get('active'), note: (fd.get('note') || '').toString().trim() };
+  const important = !!fd.get('important');
+  if (important && fd.get('optional')) { toast("A chore can't be both Optional and Important — untick one", true); return; }
+  if (important && share === 'turns') { toast("Important can't be used with Take turns (those wait for whoever has the turn)", true); return; }
+  // Keep the original start date while it stays Important; a newly Important chore counts from tomorrow.
+  const importantSince = important ? (existing && existing.important && existing.importantSince ? existing.importantSince : L.dateKey(new Date())) : '';
+  const data = { name, group: fd.get('group'), due: fd.get('due'), pts, kids, house, days, rotate: share || false, rotateOffset: share === 'daily' ? L.offsetFor(kids, fd.get('todayKid'), L.dateKey(new Date())) : 0, schoolOnly: !!fd.get('schoolOnly'), schoolNext: !!fd.get('schoolNext'), optional: !!fd.get('optional'), important, importantSince, active: !!fd.get('active'), note: (fd.get('note') || '').toString().trim() };
   // Picture: a new one or a removal from this edit; otherwise keep what the chore had.
   const draft = S.picDraft && S.picDraft.id === (fd.get('id') || '') ? S.picDraft : null;
   if (draft) data.pic = draft.pic ? draft.pic : (DEFAULT_PICS[id] ? 'none' : '');
@@ -1347,7 +1424,7 @@ function adminPast() {
     return '<div class="list-row"><span class="pts-tile" style="background:' + (magic ? '#422006' : 'var(--green)') + ';width:40px;height:40px;font-size:14px">' + (magic ? starIco(20, '#FACC15') : ico('check', 20, 3)) + '</span><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(magic ? 'Magic button' : (c.choreName || 'Chore')) + '</div><div class="small muted">' + (c.addedLate ? 'Added later by ' + h(adultName(c.addedBy)) : (c.at ? 'Ticked ' + L.fmtClock(c.at) : '')) + '</div></div><div style="font-weight:800;color:#15803D">+' + (c.pts || 0) + '</div>' +
       (canTake ? '<button type="button" class="btn ghost-red" data-act="past-take" data-kid="' + k + '" data-date="' + d + '" data-chore="' + h(c.choreId) + '">Take back</button>' : '') + '</div>';
   }).join('');
-  const todoRows = todo.map((c) => '<div class="list-row"><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(c.name) + (c.optional ? ' <span class="tag opt">Optional</span>' : '') + '</div><div class="small muted">Due ' + L.fmtTime(c.due) + (L.shareMode(c) === 'turns' ? ' · take-turns' : '') + ' · ' + c.pts + ' pts</div></div>' +
+  const todoRows = todo.map((c) => '<div class="list-row"><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(c.name) + (c.optional ? ' <span class="tag opt">Optional</span>' : '') + (c.important ? ' <span class="tag imp">Important</span>' : '') + '</div><div class="small muted">Due ' + L.fmtTime(c.due) + (L.shareMode(c) === 'turns' ? ' · take-turns' : '') + ' · ' + c.pts + ' pts</div></div>' +
     '<button type="button" class="btn primary" data-act="past-add" data-kid="' + k + '" data-date="' + d + '" data-chore="' + h(c.id) + '">' + ico('plus', 18, 2.6) + 'Add</button></div>').join('');
   return adminScreen(top +
     '<p class="small muted" style="margin:0">Pick who and which day (up to ' + L.PAST_DAYS + ' days back), then add what was done. Points go on the balance straight away. Weekly checks already worked out are not changed, and the Magic button can\'t be added. For anything older, use Balances › Add points.</p>' +
@@ -1365,18 +1442,24 @@ async function pastAdd(kid, date, choreId) {
   const cid = L.completionId(kid, date, choreId);
   if (S.completions.some((c) => c.id === cid)) { toast('Already ticked.', true); render(); return; }
   if (!navigator.onLine) { toast('You need a connection for this, so the points stay correct.', true); return; }
-  if (!confirm('Add "' + ch.name + '" for ' + kidName(kid) + ' on ' + L.fmtKey(date) + '?\n\n+' + ch.pts + ' points go on ' + kidName(kid) + '\'s balance now.')) return;
+  // If an Important deduction was taken for this chore/day, it is given back in the same write.
+  const mid = L.missId(kid, date, choreId); const uid = L.unmissId(kid, date, choreId);
+  const miss = S.missAdj.find((a) => a.id === mid);
+  const back = miss && miss.pts < 0 && !S.missAdj.some((a) => a.id === uid) ? -miss.pts : 0;
+  if (!confirm('Add "' + ch.name + '" for ' + kidName(kid) + ' on ' + L.fmtKey(date) + '?\n\n+' + ch.pts + ' points go on ' + kidName(kid) + '\'s balance now.' + (back ? '\nThe ' + back + ' points taken off for missing it are given back too.' : ''))) return;
   pastBusy = true; touchAdmin();
   try {
     // Ask the server (not this phone's copy) in case someone else just ticked it.
     if (await S.store.exists('completions/' + cid)) { toast('Already ticked.', true); return; }
+    const giveBack = back && !(await S.store.exists('adjustments/' + uid)) ? back : 0;
     const now = new Date();
     // The tick and the points go in as one all-or-nothing write. undoUntil is already past so a kid can't undo it.
     await S.store.batch([
       { op: 'set', path: 'completions/' + cid, data: { kid, choreId, choreName: ch.name, pts: ch.pts, date, at: now, undoUntil: new Date(now.getTime() - 60000), by: S.user, house: ch.house, addedLate: true, addedBy: S.user } },
-      { op: 'update', path: 'balances/' + kid, data: { points: inc(ch.pts), lastOp: cid } }
+      ...(giveBack ? [{ op: 'set', path: 'adjustments/' + uid, data: { kid, pts: giveBack, reason: 'Given back: ' + ch.name + ' was done after all (' + L.fmtKey(date) + ')', by: S.user, at: now, day: date, choreId, auto: true, unmiss: true } }] : []),
+      { op: 'update', path: 'balances/' + kid, data: { points: inc(ch.pts + giveBack), lastOp: cid } }
     ]);
-    toast('Added +' + ch.pts + ' for ' + kidName(kid) + ' (' + L.fmtKey(date) + ')');
+    toast('Added +' + (ch.pts + giveBack) + ' for ' + kidName(kid) + ' (' + L.fmtKey(date) + ')');
   } catch (e) {
     console.error(e);
     toast(e && e.code === 'permission-denied' ? 'Not allowed — nothing was changed.' : 'Could not save, nothing was changed: ' + (e.message || e), true);
@@ -1387,14 +1470,18 @@ async function pastTake(kid, date, choreId) {
   const cid = L.completionId(kid, date, choreId);
   const c = S.completions.find((x) => x.id === cid);
   if (!c || !c.addedLate || hiddenFromMe(kid) || !L.canAddPast(date, L.dateKey(new Date()))) { toast('Only ticks added on this screen can be taken back here.', true); return; }
-  if (L.penaltyCfg(S.config).floor && points(kid) < (c.pts || 0)) { toast(kidName(kid) + ' has already spent some of these points, so it can\'t be taken back.', true); return; }
+  // If an Important deduction was given back when this was added, taking the tick back charges it again.
+  const u = S.missAdj.find((a) => a.id === L.unmissId(kid, date, choreId));
+  const again = u ? (u.pts || 0) : 0;
+  if (L.penaltyCfg(S.config).floor && points(kid) < (c.pts || 0) + again) { toast(kidName(kid) + ' has already spent some of these points, so it can\'t be taken back.', true); return; }
   if (!navigator.onLine) { toast('You need a connection for this, so the points stay correct.', true); return; }
-  if (!confirm('Take back "' + (c.choreName || 'this tick') + '" for ' + kidName(kid) + ' on ' + L.fmtKey(date) + '?\n\n' + (c.pts || 0) + ' points come off ' + kidName(kid) + '\'s balance.')) return;
+  if (!confirm('Take back "' + (c.choreName || 'this tick') + '" for ' + kidName(kid) + ' on ' + L.fmtKey(date) + '?\n\n' + ((c.pts || 0) + again) + ' points come off ' + kidName(kid) + '\'s balance' + (again ? ' (including the Important deduction that was given back)' : '') + '.')) return;
   pastBusy = true; touchAdmin();
   try {
     await S.store.batch([
       { op: 'delete', path: 'completions/' + cid },
-      { op: 'update', path: 'balances/' + kid, data: { points: inc(-(c.pts || 0)), lastOp: cid } }
+      ...(u ? [{ op: 'delete', path: 'adjustments/' + u.id }] : []),
+      { op: 'update', path: 'balances/' + kid, data: { points: inc(-((c.pts || 0) + again)), lastOp: cid } }
     ]);
     toast('Taken back');
   } catch (e) {
@@ -1413,7 +1500,9 @@ function adminPeople() {
     '<form data-form="houses" class="card"><h2 style="font-size:18px">Houses</h2>' + houses.map((x) => '<div class="field"><label for="hn-' + x + '">House name</label><input class="input" id="hn-' + x + '" name="name_' + x + '" maxlength="30" required value="' + h(cfg.houses[x].name) + '"></div><div class="lbl">Adults who run ' + h(cfg.houses[x].name) + '</div><div class="chips">' + ADULTS.map((a) => '<label class="check" style="padding:0 14px;border:2px solid #C9CFDC;border-radius:999px"><input type="checkbox" name="admins_' + x + '" value="' + a + '"' + ((cfg.houses[x].admins || []).includes(a) ? ' checked' : '') + '><span style="font-weight:800">' + h(adultName(a)) + '</span></label>').join('') + '</div>').join('<hr style="border:none;border-top:2px solid #EEF1F8;width:100%">') +
     '<button class="btn primary" type="submit">Save houses</button></form>' +
     '<form data-form="kids" class="card"><h2 style="font-size:18px">Kids</h2>' + Object.keys(cfg.kids).map((k) => '<div class="field"><label for="kn-' + k + '">Name shown for ' + h(k) + '</label><input class="input" id="kn-' + k + '" name="kid_' + k + '" maxlength="20" required value="' + h(cfg.kids[k].name) + '"></div>').join('') +
-    '<p class="small muted" style="margin:0">Kids choose their own colour on their Me page.</p><button class="btn primary" type="submit">Save names</button></form>');
+    '<p class="small muted" style="margin:0">Kids choose their own colour on their Me page.</p><button class="btn primary" type="submit">Save names</button></form>' +
+    '<div class="card"><h2 style="font-size:18px">Screen style</h2><p class="small muted" style="margin:0">Picture screen: big picture tiles for young kids. List screen: times, tags and details, like Alex and Emma\'s. Chores, points and history stay the same either way.</p>' +
+    Object.keys(cfg.kids).map((k) => { const pic = !!cfg.kids[k].simple; return '<div class="list-row"><div class="grow col" style="gap:2px"><div style="font-weight:800">' + h(kidName(k)) + '</div><div class="small muted">' + (pic ? 'Picture screen' : 'List screen') + '</div></div><button type="button" class="btn" data-act="kid-simple" data-kid="' + k + '">' + (pic ? 'Switch to list' : 'Switch to pictures') + '</button></div>'; }).join('') + '</div>');
 }
 
 function magicSettingsCard() {
@@ -1535,6 +1624,12 @@ const ACT = {
   'other-house': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'other', otherHouse: d.house }; render(); window.scrollTo(0, 0); },
   'edit-reward': (d) => { touchAdmin(); S.view = { screen: 'admin', sub: 'reward', editId: d.id || null }; render(); window.scrollTo(0, 0); },
   'del-reward': (d) => { if (!confirm('Delete this reward?')) return; touchAdmin(); write([{ op: 'delete', path: 'rewards/' + d.id }], 'Reward deleted'); S.view = { screen: 'admin', sub: 'rewards' }; render(); },
+  'kid-simple': (d) => {
+    touchAdmin();
+    const pic = !(S.config.kids[d.kid] || {}).simple;
+    if (!confirm('Switch ' + kidName(d.kid) + ' to the ' + (pic ? 'picture' : 'list') + ' screen?')) return;
+    write([{ op: 'update', path: 'config/main', data: { ['kids.' + d.kid + '.simple']: pic } }], kidName(d.kid) + ' now has the ' + (pic ? 'picture' : 'list') + ' screen');
+  },
   'del-override': (d) => { const o = (S.config.overrides || []).slice(); o.splice(Number(d.i), 1); touchAdmin(); write([{ op: 'update', path: 'config/main', data: { overrides: o } }], 'Removed'); },
   'del-term': (d) => { touchAdmin(); write([{ op: 'update', path: 'config/main', data: { terms: (S.config.terms || []).filter((t) => t.start !== d.start) } }], 'Term removed'); },
   'del-date': (d) => { touchAdmin(); write([{ op: 'update', path: 'config/main', data: { [d.field]: (S.config[d.field] || []).filter((x) => x !== d.d) } }], 'Removed'); },
@@ -1735,6 +1830,7 @@ setInterval(() => {
   render();
   autoBackup();
   applyPenalties();
+  applyMisses();
 }, 60000);
 
 // ---------- start ----------
